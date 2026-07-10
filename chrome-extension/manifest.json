@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "千川巡检读取助手",
+  "version": "0.1.1",
+  "description": "读取千川页面类型并按字段映射提取巡检数据骨架。",
+  "permissions": ["activeTab", "storage", "alarms", "notifications"],
+  "host_permissions": ["http://127.0.0.1:8788/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://qianchuan.jinritemai.com/*"],
+      "js": ["injector.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://qianchuan.jinritemai.com/*"],
+      "js": ["field-map.js", "content.js"]
+    }
+  ]
+}

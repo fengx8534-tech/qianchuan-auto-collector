@@ -1,0 +1,5 @@
+interface:
+  display_name: "千川任务采集"
+  short_description: "稳定采集千川调控任务、一键起量和素材追投状态"
+  default_prompt: "Use $qianchuan-task-collector to diagnose and repair Qianchuan task, one-click lift, and material boost collection."
+

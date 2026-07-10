@@ -1,0 +1,5 @@
+interface:
+  display_name: "千川小时采集"
+  short_description: "稳定采集千川小时消耗、基础消耗和追投占比"
+  default_prompt: "Use $qianchuan-hourly-collector to diagnose and repair Qianchuan hourly spend, base spend, ROI, and boost-ratio collection."
+

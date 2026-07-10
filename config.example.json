@@ -1,0 +1,36 @@
+{
+  "accountId": "YOUR_QIANCHUAN_ACCOUNT_ID",
+  "targetRoi": 6.5,
+  "deepseek": {
+    "apiKey": "YOUR_DEEPSEEK_API_KEY",
+    "model": "deepseek-chat"
+  },
+  "cdp": {
+    "url": "http://localhost:9222"
+  },
+  "dingtalk": {
+    "enabled": false,
+    "webhook": "YOUR_DINGTALK_WEBHOOK_URL",
+    "secret": "YOUR_DINGTALK_SECRET"
+  },
+  "live": {
+    "openTime": "06:00",
+    "closeTime": "02:00"
+  },
+  "sop": {
+    "category": "YOUR_CATEGORY",
+    "targetRoi": 6.5,
+    "boostRatioLimit": 30,
+    "maxBudgetIncrease": 200,
+    "roiStep": 0.2,
+    "avgOrderValue": 329,
+    "grossMargin": 54,
+    "returnRate": 44,
+    "openTime": "06:00",
+    "closeTime": "02:00",
+    "shiftTimes": ["10:00", "14:00", "18:00", "22:00"],
+    "pauseCondition": "ROI < 目标 × 50% 且 消耗 > 预算 × 50%",
+    "increaseCondition": "ROI > 目标 × 120% 且 追投占比 < 25%",
+    "lowerRoiCondition": "消耗过快且 ROI 持续低于目标超过 30 分钟"
+  }
+}

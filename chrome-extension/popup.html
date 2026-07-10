@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>千川读取助手</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f6f3;
+        --surface: #ffffff;
+        --surface-soft: #f0f4f2;
+        --line: #d9ded8;
+        --text: #1d2521;
+        --muted: #56615c;
+        --green: #1f7a55;
+        --green-dark: #155b41;
+        --green-subtle: #f2faf6;
+        --amber-subtle: #fff8ed;
+        --green-alpha: rgba(31, 122, 85, 0.12);
+      }
+
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #0f1512;
+        --surface: #1a201d;
+        --surface-soft: #222926;
+        --line: #2e3632;
+        --text: #e4e8e6;
+        --muted: #8f9a95;
+        --green: #3dbd8a;
+        --green-dark: #2ea87a;
+        --green-subtle: #1a2e25;
+        --amber-subtle: #2a2518;
+        --green-alpha: rgba(61, 189, 138, 0.15);
+      }
+
+      body {
+        width: 240px;
+        margin: 0;
+        padding: 12px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+
+      p {
+        margin: 8px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      button {
+        width: 100%;
+        min-height: 36px;
+        margin-top: 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--green);
+        color: var(--surface);
+        cursor: pointer;
+        font-weight: 700;
+      }
+
+      #themeToggle {
+        background: var(--surface);
+        color: var(--text);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>千川读取助手</h1>
+    <p>当前页面：<strong id="pageType">待读取</strong></p>
+    <button id="extractBtn" type="button">读取数据</button>
+    <button id="openDashboardBtn" type="button">打开操作台</button>
+    <button id="themeToggle" type="button">切换主题 ◑</button>
+    <p id="statusText">等待操作。</p>
+
+    <script src="./popup.js"></script>
+  </body>
+</html>

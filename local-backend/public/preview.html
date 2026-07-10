@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>千川实时调控台</title>
+    <link rel="stylesheet" href="/assets/preview.css?v=zhanling-profit-model-1" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="top-left-cluster">
+          <div class="brand-block">
+            <p class="eyebrow">Live Ops Console</p>
+            <h1>千川实时调控台</h1>
+          </div>
+          <aside id="engineeringMonitorPanel" class="engineering-monitor collapsed" aria-label="工程监控">
+            <button id="engineeringMonitorToggle" class="engineering-monitor-head" type="button" aria-expanded="false">
+              <span id="engineeringMonitorDot" class="engineering-monitor-dot">●</span>
+              <strong>工程监控</strong>
+              <span id="engineeringMonitorScore">-- 分</span>
+            </button>
+            <div id="engineeringMonitorBody" class="engineering-monitor-body">
+              <div id="engineeringCollectorGrid" class="engineering-monitor-grid"></div>
+              <div id="engineeringAlertList" class="engineering-alert-list"></div>
+              <div class="engineering-monitor-foot">
+                <span id="engineeringFixMeta">等待检查</span>
+                <button id="engineeringMonitorDetails" type="button">展开详情</button>
+              </div>
+            </div>
+          </aside>
+        </div>
+        <div class="page-nav" aria-label="调控台导航">
+          <button data-view="monitor" class="page-nav-btn active" type="button">监控面板</button>
+          <button data-view="sop" class="page-nav-btn" type="button">投放SOP</button>
+          <button data-view="learning" class="page-nav-btn" type="button">调控学习</button>
+        </div>
+        <div class="top-actions">
+          <span id="syncStatus" class="pill">等待后台</span>
+          <div id="executionModeSwitch" class="execution-switch" aria-label="执行模式">
+            <button data-exec-mode="review" class="execution-btn active" type="button">审批执行</button>
+            <button data-exec-mode="auto" class="execution-btn" type="button">自动执行</button>
+          </div>
+          <button id="themeToggle" type="button" title="切换主题">◑</button>
+          <button id="refreshBtn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section id="systemError" class="error-banner" hidden></section>
+
+      <section id="monitorPage" class="app-view active">
+      <section class="status-bar">
+        <span id="liveStatus">--</span>
+        <span id="openTime">开播时间：--</span>
+        <span id="liveDuration">已直播：--</span>
+        <span id="statusFiveMinSpend">最近 5 分钟消耗：--</span>
+        <span id="currentAdvice">当前调控建议：持续观察</span>
+      </section>
+
+      <section class="system-status">
+        <span id="monitorStatus">○ AI 已关</span>
+        <span id="lastCollectStatus">最近采集：--</span>
+        <span id="lastAiStatus">最近 AI 决策：--</span>
+        <span id="nextAiStatus">下次 AI 决策：--</span>
+        <span id="aiProgressStatus">待机</span>
+      </section>
+
+      <section id="aiStatusBar" class="ai-status-bar">
+        <div class="ai-status-main">
+          <strong id="aiStatusTitle">AI 盯盘：--</strong>
+          <span id="aiStatusDetail">等待后台状态</span>
+        </div>
+        <div class="ai-status-pills">
+          <span id="aiStatusCollect" class="ai-status-pill">采集：--</span>
+          <span id="aiStatusAction" class="ai-status-pill">执行：--</span>
+          <span id="aiStatusDryRun" class="ai-status-pill">dryRun：--</span>
+          <span id="aiStatusPending" class="ai-status-pill">待确认：--</span>
+        </div>
+        <button id="stopAiMonitorBtn" class="ai-status-stop" type="button">关闭盯盘</button>
+      </section>
+
+      <section id="taskCollectBar" class="task-collect-bar" hidden>
+        <button id="taskCollectToggle" class="task-collect-summary" type="button" aria-expanded="false">
+          <span id="taskCollectIcon">●</span>
+          <strong id="taskCollectText">任务采集：--</strong>
+          <span id="taskCollectMeta"></span>
+          <span class="task-collect-caret">详情 ▼</span>
+        </button>
+        <div id="taskCollectDetails" class="task-collect-details" hidden></div>
+      </section>
+
+      <details id="visualCaptureDetails" class="panel visual-capture-card">
+        <summary class="panel-head">
+          <h2>视觉补采</h2>
+          <span id="visualStatusBadge" class="badge muted">只读</span>
+        </summary>
+        <div class="visual-capture-grid">
+          <div>
+            <strong id="visualTitle">等待连接浏览器</strong>
+            <p id="visualMeta">用于补足接口采集缺口，目前只读取页面和截图，不执行投放动作。</p>
+          </div>
+          <button id="initTabsBtn" type="button">一键初始化采集页</button>
+          <button id="runVisualCapture" type="button">执行视觉补采</button>
+          <button id="collectOverallBtn" type="button">采集整体指标</button>
+          <button id="collectControlBtn" type="button">采集调控任务</button>
+          <button id="collectMaterialBoostBtn" type="button">采集素材追投</button>
+          <button id="collectOneClickLiftBtn" type="button">采集一键起量</button>
+          <button id="collectHourlyBtn" type="button">采集单小时明细</button>
+        </div>
+        <div id="autoCollectStatus" class="visual-result">分路线采集：等待运行</div>
+        <div id="initTabsStatus" class="visual-result" hidden>初始化：未运行</div>
+        <div id="visualResult" class="visual-result">等待补采</div>
+      </details>
+
+      <details id="aiConfigCard" class="panel ai-config-card">
+        <summary>AI 配置 <span id="aiSecretStatus" class="badge muted">检查中</span></summary>
+        <div class="ai-config-grid">
+          <label>DeepSeek key
+            <input id="deepseekKeyInput" type="password" placeholder="只用于本机保存，不会回显" autocomplete="off" />
+          </label>
+          <button id="saveDeepseekKey" type="button">保存 key</button>
+          <label class="checkbox-row">
+            <input id="aiEnabledInput" type="checkbox" />
+            AI 自动盯盘
+          </label>
+          <label class="checkbox-row">
+            <input id="aiAutoCollectInput" type="checkbox" />
+            AI 自动采集
+          </label>
+          <label>系统目标 ROI
+            <input id="targetRoiInput" type="number" min="1" max="20" step="0.1" placeholder="例如 6.5" />
+          </label>
+          <label>模型
+            <select id="aiModelInput">
+              <option value="deepseek-v4-pro">deepseek-v4-pro（Pro）</option>
+              <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+            </select>
+          </label>
+          <label>触发频率
+            <select id="aiIntervalInput">
+              <option value="60000">1 分钟</option>
+              <option value="300000">5 分钟</option>
+              <option value="900000">15 分钟</option>
+            </select>
+          </label>
+          <button id="triggerAiNow" type="button">采集最新数据并让 AI 看</button>
+          <div class="ai-takeover-row">
+            <button id="aiTakeoverBtn" class="btn-danger" type="button">AI 全盘接管测试</button>
+            <span id="aiTakeoverStatus" class="badge muted">待开启</span>
+          </div>
+          <div id="aiTriggerResult" class="ai-config-result">等待操作</div>
+        </div>
+        <div id="armed-once-panel" class="armed-once-panel" style="display:none">
+          <div class="armed-once-title">⚠️ 危险：单次真点放行</div>
+          <div class="armed-once-desc">
+            关闭 dryRun 一次，执行后自动恢复。确认靶子任务已在千川页面可见。
+          </div>
+          <button id="btn-armed-once" class="btn-danger" type="button">开启单次真点</button>
+          <span id="armed-once-status"></span>
+        </div>
+      </details>
+
+      <section class="metrics-grid">
+        <article class="metric-card"><span class="metric-label">综合成本</span><strong class="metric-value" id="metricCost">--</strong><span class="metric-source" id="metricCostSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">净成交 ROI</span><strong class="metric-value" id="metricRoi">--</strong><span class="metric-source" id="metricRoiSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">净成交金额</span><strong class="metric-value" id="metricRevenue">--</strong><span class="metric-source" id="metricRevenueSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">整体成交订单数</span><strong class="metric-value" id="metricOrders">--</strong><span class="metric-source" id="metricOrdersSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">整体成交订单成本</span><strong class="metric-value" id="metricOrderCost">--</strong><span class="metric-source" id="metricOrderCostSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">基础消耗</span><strong class="metric-value" id="metricBaseSpend">--</strong><span class="metric-source" id="metricBaseSpendSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">GPM</span><strong class="metric-value" id="metricGpm">--</strong><span class="metric-source" id="metricGpmSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">追投占比</span><strong class="metric-value" id="metricBoostRatio">--</strong><span class="metric-source" id="metricBoostRatioSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">单小时 ROI</span><strong class="metric-value" id="metricCurrentHourRoi">--</strong><span class="metric-source" id="metricCurrentHourRoiSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">单小时消耗</span><strong class="metric-value" id="metricCurrentHourCost">--</strong><span class="metric-source" id="metricCurrentHourCostSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">观看成交率</span><strong class="metric-value" id="metricWatchDealRate">--</strong><span class="metric-source" id="metricWatchDealRateSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">小时基础消耗</span><strong class="metric-value" id="metricHourSegmentBaseSpend">--</strong><span class="metric-source" id="metricHourSegmentBaseSpendSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">小时段追投占比</span><strong class="metric-value" id="metricHourSegmentBoostRatio">--</strong><span class="metric-source" id="metricHourSegmentBoostRatioSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">观看人数</span><strong class="metric-value" id="metricTotalViewers">--</strong><span class="metric-source" id="metricTotalViewersSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">在线人数</span><strong class="metric-value" id="metricOnlineCount">--</strong><span class="metric-source" id="metricOnlineCountSource">来源：--</span></article>
+        <article class="metric-card"><span class="metric-label">曝光观看率</span><strong class="metric-value" id="metricExposureWatchRate">--</strong><span class="metric-source" id="metricExposureWatchRateSource">来源：--</span></article>
+      </section>
+
+      <section class="panel task-health">
+        <div class="panel-head">
+          <h2>任务健康度</h2>
+          <span id="taskSourceBadge" class="badge muted">等待采集</span>
+          <button id="taskHealthToggle" class="panel-toggle" type="button" hidden>展开全部</button>
+        </div>
+        <div id="taskSourceMeta" class="source-meta"></div>
+        <div class="task-create-toolbar">
+          <button id="createBoostTaskBtn" type="button">+ 新建追投</button>
+          <button id="createOneClickBtn" type="button">+ 新建一键起量</button>
+        </div>
+        <div id="taskHealthList" class="task-health-list"></div>
+      </section>
+
+      <section id="accountWarning" class="warning-banner" hidden></section>
+
+      <section class="panel trend-section">
+        <div class="panel-head">
+          <h2>开播趋势</h2>
+          <div class="trend-controls" role="tablist" aria-label="趋势粒度">
+            <button type="button" data-trend-granularity="1">每分钟</button>
+            <button type="button" data-trend-granularity="5">每5分钟</button>
+            <button type="button" data-trend-granularity="30">每30分钟</button>
+          </div>
+          <span class="badge muted">消耗 / 成交</span>
+        </div>
+        <div id="trendChart" class="trend-chart"></div>
+      </section>
+
+      <section id="dailyReviewSection" class="panel daily-review-section" hidden>
+        <div class="panel-head">
+          <h2>下播复盘</h2>
+          <span id="dailyReviewBadge" class="badge muted">等待生成</span>
+          <button id="runDailyReview" class="panel-toggle" type="button">重新生成</button>
+        </div>
+        <div id="dailyReviewBody" class="daily-review-body"></div>
+      </section>
+      </section>
+
+      <section id="sopPage" class="app-view" hidden>
+        <section class="panel sop-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Investment SOP</p>
+              <h2>投放SOP</h2>
+            </div>
+            <span id="sopSaveStatus" class="badge muted">已同步</span>
+          </div>
+
+          <div class="sop-block">
+            <h3>基础参数</h3>
+            <div class="sop-param-grid">
+              <label>品类<input id="sopCategory" data-sop-field="category" type="text" placeholder="请填写你的投放品类和规则" /></label>
+              <label>目标 ROI<input id="sopTargetRoi" data-sop-field="targetRoi" type="number" min="1" max="20" step="0.1" /></label>
+              <label>追投占比上限<div class="input-suffix"><input id="sopBoostRatioLimit" data-sop-field="boostRatioLimit" type="number" min="1" max="100" step="1" /><span>%</span></div></label>
+              <label>单次加量上限<div class="input-suffix"><input id="sopMaxBudgetIncrease" data-sop-field="maxBudgetIncrease" type="number" min="1" step="1" /><span>元</span></div></label>
+              <label>ROI调整单步<input id="sopRoiStep" data-sop-field="roiStep" type="number" min="0.01" max="5" step="0.01" /></label>
+              <label>客单价<div class="input-suffix"><input id="sopAvgOrderValue" data-sop-field="avgOrderValue" type="number" min="1" step="1" /><span>元</span></div></label>
+              <label>毛利率<div class="input-suffix"><input id="sopGrossMargin" data-sop-field="grossMargin" type="number" min="0" max="100" step="0.1" /><span>%</span></div></label>
+              <label>退货率<div class="input-suffix"><input id="sopReturnRate" data-sop-field="returnRate" type="number" min="0" max="100" step="0.1" /><span>%</span></div></label>
+              <label>直播开始<input id="sopOpenTime" data-sop-field="openTime" type="time" /></label>
+              <label>直播结束<input id="sopCloseTime" data-sop-field="closeTime" type="time" /></label>
+              <label class="sop-wide">换播时间<input id="sopShiftTimes" data-sop-field="shiftTimes" type="text" placeholder="10:00 14:00 18:00 22:00" /></label>
+            </div>
+          </div>
+
+          <div class="sop-block">
+            <h3>场景规则</h3>
+            <label class="sop-text-label">基础场景<textarea id="sopScenarioRules" data-sop-field="scenarioRules" rows="7" placeholder="请填写你的投放品类和规则"></textarea></label>
+            <div class="sop-rule-grid">
+              <label>暂停条件<textarea id="sopPauseCondition" data-sop-field="pauseCondition" rows="3" placeholder="请填写你的投放品类和规则"></textarea></label>
+              <label>加量条件<textarea id="sopIncreaseCondition" data-sop-field="increaseCondition" rows="3" placeholder="请填写你的投放品类和规则"></textarea></label>
+              <label>降ROI条件<textarea id="sopLowerRoiCondition" data-sop-field="lowerRoiCondition" rows="3" placeholder="请填写你的投放品类和规则"></textarea></label>
+            </div>
+          </div>
+
+          <div class="sop-block">
+            <h3>自主追投场景</h3>
+            <label class="sop-text-label">素材分层追投规则<textarea id="sopAutonomousBoostRules" data-sop-field="autonomousBoostRules" rows="10"></textarea></label>
+          </div>
+
+          <div class="sop-block">
+            <div class="sop-block-head">
+              <h3>常见问题 & 排查路径</h3>
+              <button id="sopAddCategory" type="button">添加分类</button>
+            </div>
+            <div id="sopFaqList" class="sop-faq-list"></div>
+          </div>
+
+          <div class="sop-block">
+            <h3>固定调控规则</h3>
+            <div class="sop-faq-list">
+              <details class="sop-faq-group sop-static-rule">
+                <summary>开播冷启动</summary>
+                <div class="sop-faq-items">
+                  <p>早 6:00 开播 5 分钟后，启用一键起量：直播间购买，预算 200-300 元，时长 1 小时。</p>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>主播轮班表</summary>
+                <div class="sop-faq-items">
+                  <p>A / B / C / D / E 班，每 4 小时轮换。换播时间 10:00 / 14:00 / 18:00 / 22:00，各 ±15 分钟不调控。</p>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>ROI 调整规则</summary>
+                <div class="sop-faq-items">
+                  <ul>
+                    <li>下调：最低 6.0（安全界限），每次 0.2 区间，须操作人同意</li>
+                    <li>上调：看实时转化流速，流速快可用 0.5 区间</li>
+                    <li>冷静期：两次调整间隔 ≥ 30 分钟，调整后观察 1 小时</li>
+                    <li>⚠️ 禁止频繁调整</li>
+                  </ul>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>流速判断与基础消耗</summary>
+                <div class="sop-faq-items">
+                  <ul>
+                    <li>基础消耗是跑量核心，基础差时追投/起量效果不好</li>
+                    <li>每 5 分钟流速 &lt; 100 → 可小额测试素材追投（目标提升至 130+）</li>
+                    <li>每 5 分钟流速 &gt; 200 → 转化正常不调，转化困难上抬 0.5 ROI</li>
+                    <li>单小时成本稳定 + 基础满足流速 → 不调控</li>
+                    <li>ROI 过低时更不调控（避免空消耗）</li>
+                  </ul>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>加量约束</summary>
+                <div class="sop-faq-items">
+                  <ul>
+                    <li>每次加量任务 ≤ 2 个</li>
+                    <li>一键起量与素材放量追投互斥（同时开会抢量）</li>
+                    <li>调控后观察 30 分钟：空消耗或消耗 &gt; 100 且 ROI 2-3 → 提醒手动关闭</li>
+                  </ul>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>素材追投参数</summary>
+                <div class="sop-faq-items">
+                  <ul>
+                    <li>控成本出价公式：出价 = 329 ÷ ROI 目标（例：6.3 → 52）</li>
+                    <li>支付 ROI 按目标 ROI</li>
+                    <li>放量追投：200-300 元/1h，转化低降 150 元/1h</li>
+                    <li>超预算 70% 未转化 → 手动关闭</li>
+                    <li>新素材优先控成本追投</li>
+                    <li>素材筛选：综合 ROI 排序 → 点击率/转化率辅筛</li>
+                  </ul>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <details class="sop-faq-group sop-static-rule" id="dingtalkConfigPanel">
+            <summary>钉钉通知配置</summary>
+            <div class="sop-faq-items">
+              <label class="sop-text-label">Webhook URL<input id="dingtalkWebhookInput" type="url" autocomplete="off" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." /></label>
+              <label class="sop-text-label">加签密钥<input id="dingtalkSecretInput" type="password" autocomplete="new-password" placeholder="留空则保留已保存的密钥" /></label>
+              <label class="checkbox-line"><input id="dingtalkEnabledInput" type="checkbox" /> 启用钉钉通知</label>
+              <label class="checkbox-line"><input id="dingtalkNotifyCollectorError" type="checkbox" /> 采集异常</label>
+              <label class="checkbox-line"><input id="dingtalkNotifyAiSuggestion" type="checkbox" /> AI 建议</label>
+              <label class="checkbox-line"><input id="dingtalkNotifyActionResult" type="checkbox" /> 执行结果</label>
+              <label class="checkbox-line"><input id="dingtalkNotifyHourlySummary" type="checkbox" /> 定时汇总</label>
+              <label class="checkbox-line"><input id="dingtalkNotifySystemAlert" type="checkbox" /> 系统告警</label>
+              <div class="sop-block-head">
+                <span id="dingtalkConfigStatus" class="badge muted">未配置</span>
+                <div>
+                  <button id="dingtalkTestBtn" type="button">发送测试消息</button>
+                  <button id="dingtalkSaveBtn" type="button">保存</button>
+                </div>
+              </div>
+            </div>
+          </details>
+        </section>
+      </section>
+
+      <section id="learningPage" class="app-view" hidden>
+      <section id="actionSection" class="panel action-section">
+        <div class="panel-head">
+          <h2>调控动作</h2>
+          <span id="autoMode" class="badge">调控学习</span>
+          <button id="actionListToggle" class="panel-toggle" type="button" hidden>展开全部</button>
+        </div>
+        <form id="manualActionForm" class="manual-action-form">
+          <select id="manualActionType">
+            <option value="increase_task_budget">加预算</option>
+            <option value="decrease_task_budget">降预算</option>
+            <option value="extend_task_duration">延长时长</option>
+            <option value="adjust_task_budget_duration">预算+时长</option>
+            <option value="pause_task">暂停任务</option>
+          </select>
+          <input id="manualActionTask" type="text" placeholder="任务ID或任务名" />
+          <input id="manualActionBudget" type="number" min="0" step="1" placeholder="加预算金额" />
+          <input id="manualActionDuration" type="number" min="0" step="0.5" placeholder="新时长(小时)" />
+          <input id="manualActionCommand" type="text" placeholder="具体动作，例如：给12:13素材追投加到800元" />
+          <button type="submit">生成确认动作</button>
+        </form>
+        <div id="manualActionResult" class="manual-action-result">人工动作会弹出确认框，同意后系统再执行。</div>
+        <div id="actionList" class="action-list"></div>
+      </section>
+
+      <section class="panel ai-section">
+        <div class="panel-head">
+          <h2>AI 决策日志</h2>
+          <span class="badge muted">DeepSeek</span>
+          <button id="aiLogToggle" class="panel-toggle" type="button" hidden>展开全部</button>
+        </div>
+        <div id="aiLogList" class="log-list"></div>
+      </section>
+
+      <section class="panel log-section">
+        <div class="panel-head">
+          <h2>调控日志</h2>
+          <span id="updatedAt" class="badge muted">--</span>
+          <button id="logToggle" class="panel-toggle" type="button" hidden>展开全部</button>
+        </div>
+        <div id="logList" class="log-list"></div>
+      </section>
+      </section>
+    </main>
+
+    <button id="aiChatToggle" class="ai-chat-toggle" type="button" title="AI 分析">💬</button>
+    <aside id="aiChatPanel" class="ai-chat-panel" aria-label="AI 分析对话">
+      <div class="ai-chat-head">
+        <div>
+          <strong>AI 分析 Agent</strong>
+          <span>实时读取 state + 对话记忆</span>
+        </div>
+        <button id="aiMemoryClear" type="button" title="清空记忆">清空记忆</button>
+        <button id="aiChatClose" type="button" title="关闭">×</button>
+      </div>
+      <div class="ai-chat-quick">
+        <button type="button" data-chat-prompt="当前盘况怎么样？请用关键指标总结。">当前盘况</button>
+        <button type="button" data-chat-prompt="当前追投占比多少？哪些追投任务值得处理？">追投分析</button>
+        <button type="button" data-chat-prompt="ROI 最低的任务是谁？列出低效任务和原因。">低效任务</button>
+        <button type="button" data-chat-prompt="帮我做一次风险扫描，重点看 ROI、追投占比、订单成本和异常任务。">风险扫描</button>
+      </div>
+      <div id="aiChatMessages" class="ai-chat-messages"></div>
+      <form id="aiChatForm" class="ai-chat-form">
+        <input id="aiChatInput" type="text" placeholder="问当前盘况、追投、低效任务..." autocomplete="off" />
+        <button type="submit">发送</button>
+      </form>
+    </aside>
+
+    <dialog id="aiDialog" class="ai-dialog">
+      <form method="dialog">
+        <div class="dialog-head">
+          <p class="eyebrow">AI 决策</p>
+          <button id="aiDialogClose" type="button" title="关闭">×</button>
+        </div>
+        <div id="aiDialogReason" class="dialog-reason">--</div>
+        <div id="aiDialogActions" class="dialog-actions"></div>
+        <div id="aiDialogBatch" class="dialog-buttons">
+          <button id="aiApproveAll" type="button">同意并执行</button>
+          <button id="aiRejectAll" type="button">全部拒绝</button>
+          <button id="aiReviewEach" type="button">逐条审批</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="taskActionDialog" class="ai-dialog task-action-dialog">
+      <form id="taskActionForm" method="dialog">
+        <div class="dialog-head">
+          <p id="taskActionTitle" class="eyebrow">任务操作</p>
+          <button id="taskActionClose" type="button" title="关闭">×</button>
+        </div>
+        <div id="taskActionFields" class="task-action-fields"></div>
+        <div id="taskActionHint" class="manual-action-result">生成待确认动作后，需要在弹窗里同意；新建类会先 dryRun 截图，再二次确认真点。</div>
+        <div class="dialog-buttons">
+          <button id="taskActionSubmit" type="submit">生成确认动作</button>
+          <button id="taskActionCancel" type="button">取消</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="createTaskModal" class="ai-dialog create-task-modal">
+      <div class="dialog-head"><p class="eyebrow">新建调控任务</p><button id="createTaskClose" type="button" title="关闭">×</button></div>
+      <section class="create-task-step" id="createTaskStepType">
+        <h3>第一步：任务类型</h3>
+        <div class="create-task-types">
+          <button type="button" data-create-type="materialBoost">素材放量追投</button>
+          <button type="button" data-create-type="materialCostControlPayRoi">控成本·支付ROI</button>
+          <button type="button" data-create-type="materialCostControlBid">控成本·直播出价</button>
+          <button type="button" data-create-type="oneClickLift">一键起量·直播间购买</button>
+          <button type="button" data-create-type="liveScreenBoost">直播间画面追投</button>
+        </div>
+      </section>
+      <section class="create-task-step" id="createTaskStepMaterial" hidden>
+        <h3>第二步：选择素材</h3>
+        <div class="create-task-filters">
+          <button type="button" data-material-screen="topSpend">主跑素材</button><button type="button" data-material-screen="comprehensiveRoi">综合ROI</button><button type="button" data-material-screen="highCtr">高点击</button><button type="button" data-material-screen="highCvr">高转化</button>
+        </div>
+        <div class="create-task-manual"><input id="createTaskManualIds" placeholder="手动输入素材ID，逗号分隔" /><button id="createTaskManualScreen" type="button">验证素材</button></div>
+        <p id="createTaskScreenStatus" class="manual-action-result"></p><div id="createTaskCandidates" class="create-task-candidates"></div>
+      </section>
+      <section class="create-task-step" id="createTaskStepParams" hidden>
+        <h3>第三步：调整参数</h3>
+        <div class="task-action-fields create-task-fields">
+          <label>预算（元）<input id="createTaskBudget" type="number" min="1" value="200" /></label>
+          <label>时长（小时）<input id="createTaskDuration" type="number" min="0.5" step="0.5" value="1" /></label>
+          <label id="createTaskRoiField">ROI目标<input id="createTaskRoi" type="number" min="0.1" step="0.1" value="6" /></label>
+          <label id="createTaskPayRoiField" hidden>支付ROI<input id="createTaskPayRoi" type="number" min="0.1" step="0.1" value="6" /></label>
+          <label id="createTaskBidField" hidden>直播出价<input id="createTaskBid" type="number" min="0.1" step="0.1" value="52" /></label>
+        </div>
+        <button id="createTaskPreview" type="button">预览</button>
+      </section>
+      <section class="create-task-step" id="createTaskStepPreview" hidden>
+        <h3>第四步：预览确认</h3><p id="createTaskPreviewSummary" class="manual-action-result"></p><img id="createTaskPreviewImage" class="create-task-preview-image" alt="千川表单预览" />
+        <div class="dialog-buttons"><button id="createTaskConfirm" type="button">确认执行</button><button id="createTaskBack" type="button">返回修改</button></div>
+      </section>
+    </dialog>
+
+    <dialog id="engineeringAlertDialog" class="ai-dialog engineering-alert-dialog">
+      <form method="dialog">
+        <div class="dialog-head">
+          <p class="eyebrow">工程告警</p>
+          <button id="engineeringAlertClose" type="button" title="关闭">×</button>
+        </div>
+        <div id="engineeringAlertBody" class="dialog-reason">--</div>
+        <div class="dialog-buttons">
+          <button id="engineeringAlertOk" type="button">知道了</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/assets/preview.js?v=zhanling-profit-model-1"></script>
+  </body>
+</html>

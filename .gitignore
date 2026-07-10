@@ -1,0 +1,37 @@
+# Runtime data (keys, logs, screenshots)
+local-backend/data/
+
+# Local configuration
+config.json
+
+# Dependencies
+node_modules/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+.env.*
+
+# Generated media and private presentation artifacts
+video_output/
+douyin-v003-board/
+*.pptx
+*.inspect.ndjson
+
+# Private project history and operating materials (kept locally only)
+AGENTS.md
+CONTEXT.md
+PROJECT_*.md
+STEP*_TICKET.md
+HERMES_REVIEW_PACKAGE_*.md
+QIANCHUAN_AUTOMATION_*.md
+DOUYIN_VIDEO_*
+千川自动化投放项目拆解大纲.md
+qianchuan-live-ops/

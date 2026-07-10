@@ -1,0 +1,4 @@
+interface:
+  display_name: "千川调控台启动自检"
+  short_description: "检查本地后端、CDP Chrome 和采集器状态"
+  default_prompt: "Use $qianchuan-dashboard-startup-check to verify the local Qianchuan dashboard, CDP Chrome, and collector statuses before opening the panel."

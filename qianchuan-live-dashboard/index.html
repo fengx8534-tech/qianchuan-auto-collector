@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>千川直播盯盘操作台</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Qianchuan Live Ops</p>
+          <h1>千川直播盯盘操作台</h1>
+        </div>
+        <div class="status-strip" aria-label="当前模式">
+          <span class="dot"></span>
+          <span>建议模式 · 动作需确认</span>
+          <button id="themeToggle" class="icon-btn" type="button" title="切换主题">◑</button>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <aside class="panel config-panel" aria-label="盯盘配置">
+          <div class="panel-header">
+            <h2>盯盘配置</h2>
+            <button id="resetBtn" class="icon-btn" type="button" title="恢复默认配置">↺</button>
+          </div>
+
+          <label>
+            直播间
+            <input id="roomName" value="示例直播间" />
+          </label>
+
+          <label>
+            千川账户
+            <input id="accountName" value="示例账户" />
+          </label>
+
+          <label>
+            账户 ID
+            <input id="accountId" placeholder="请输入千川账户 ID" />
+          </label>
+
+          <div class="input-row">
+            <label>
+              开播
+              <input id="openTime" type="time" value="06:00" />
+            </label>
+            <label>
+              下播
+              <input id="closeTime" type="time" value="02:00" />
+            </label>
+          </div>
+
+          <div class="input-row">
+            <label>
+              巡检间隔
+              <select id="frequency">
+                <option value="5">5 分钟</option>
+                <option value="10">10 分钟</option>
+                <option value="15">15 分钟</option>
+              </select>
+            </label>
+            <label>
+              目标 ROI
+              <input id="targetRoi" type="number" step="0.1" value="6.5" />
+            </label>
+          </div>
+
+          <label>
+            当前阶段
+            <select id="roomStage">
+              <option value="normal">正常承接</option>
+              <option value="opening">开播前 1 小时</option>
+              <option value="handoff">主播换播/交接</option>
+              <option value="weak">承接偏弱</option>
+              <option value="strong">承接强</option>
+            </select>
+          </label>
+
+          <div class="source-box">
+            <h3>读取顺序</h3>
+            <ol>
+              <li>投放管理 / overall</li>
+              <li>千川乘方直播大屏</li>
+              <li>素材表现 / 详细对比</li>
+              <li>投放数据 / 调控</li>
+            </ol>
+          </div>
+        </aside>
+
+        <section class="main-grid">
+          <section class="panel metrics-panel" aria-label="巡检数据">
+            <div class="panel-header">
+              <h2>巡检数据</h2>
+              <span id="checkTime" class="timestamp"></span>
+            </div>
+
+            <div class="metric-grid">
+              <label>
+                综合成本
+                <input id="overallCost" type="number" step="0.01" placeholder="例如 27274.55" />
+              </label>
+              <label>
+                基础消耗
+                <input id="baseSpend" type="number" step="0.01" placeholder="例如 14872.32" />
+              </label>
+              <label>
+                小时 ROI（自动/手动）
+                <input id="currentHourRoi" type="number" step="0.1" placeholder="扩展自动填入或手动填写" />
+              </label>
+              <label>
+                当前小时消耗(元)（手动填写）
+                <input id="currentHourCost" type="number" step="1" placeholder="手动填写" />
+              </label>
+              <label>
+                一键起量状态（手动填写）
+                <select id="oneClickLiftStatus">
+                  <option value="off">未开启</option>
+                  <option value="on">已开启</option>
+                </select>
+              </label>
+              <label id="oneClickLiftSpendLabel" hidden>
+                起量已消耗(元)（手动填写）
+                <input id="oneClickLiftSpend" type="number" step="1" placeholder="手动填写" />
+              </label>
+              <label>
+                综合 ROI
+                <input id="overallRoi" type="number" step="0.01" placeholder="直播大屏读取" />
+              </label>
+              <label>
+                5 分钟流速
+                <input id="flowSpeed" type="number" step="1" placeholder="乘方大屏读取" />
+              </label>
+              <label>
+                活跃追投数
+                <input id="boostTasks" type="number" step="1" min="0" value="0" />
+              </label>
+            </div>
+
+            <div class="boost-task-section">
+              <div class="sub-header">
+                <h3>当前追投任务</h3>
+                <div class="task-actions">
+                  <button id="addTaskBtn" class="small-btn" type="button">＋添加</button>
+                  <button id="summarizeTasksBtn" class="small-btn" type="button">汇总到备注</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="task-table" aria-label="当前追投任务表">
+                  <thead>
+                    <tr>
+                      <th>任务名称</th>
+                      <th>调控类型</th>
+                      <th>素材/目标</th>
+                      <th>状态</th>
+                      <th>预算</th>
+                      <th>目标ROI</th>
+                      <th>时长/结束</th>
+                      <th>消耗</th>
+                      <th>成交金额</th>
+                      <th>调控ROI</th>
+                      <th>展示</th>
+                      <th>点击</th>
+                      <th>跑量判断</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="taskTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <label class="wide-label">
+              追投任务概要
+              <textarea id="taskNotes" rows="3" placeholder="AI读取后会把预算、剩余时间、ROI目标、跑量情况汇总到这里"></textarea>
+            </label>
+
+            <div class="action-row">
+              <button id="analyzeBtn" class="primary-btn" type="button">生成巡检判断</button>
+              <button id="copyBtn" class="secondary-btn" type="button">复制巡检 Memo</button>
+            </div>
+          </section>
+
+          <section class="panel summary-panel" aria-label="AI判断">
+            <div class="panel-header">
+              <h2>AI 判断</h2>
+              <span id="quadrantBadge" class="badge">等待数据</span>
+            </div>
+
+            <div class="kpi-row">
+              <div class="kpi">
+                <span>追投占比</span>
+                <strong id="boostShare">--</strong>
+              </div>
+              <div class="kpi">
+                <span>基础占比</span>
+                <strong id="baseShare">--</strong>
+              </div>
+              <div class="kpi">
+                <span>建议动作</span>
+                <strong id="actionLabel">--</strong>
+              </div>
+            </div>
+
+            <div class="memo-block">
+              <h3>原因</h3>
+              <p id="reasonText">录入一轮巡检数据后生成。</p>
+            </div>
+            <div class="memo-block">
+              <h3>建议</h3>
+              <p id="suggestionText">先读取页面数据，不执行投放动作。</p>
+            </div>
+            <div class="memo-block warning">
+              <h3>风险</h3>
+              <p id="riskText">动作前必须二次确认账号、页面、日期、预算和目标值。</p>
+            </div>
+          </section>
+
+          <section class="panel checklist-panel" aria-label="复盘检查">
+            <div class="panel-header">
+              <h2>复盘检查</h2>
+              <span id="missingCount" class="badge muted">0 项待补</span>
+            </div>
+            <div id="reviewList" class="review-list"></div>
+          </section>
+
+          <section class="panel memo-panel" aria-label="巡检Memo">
+            <div class="panel-header">
+              <h2>巡检 Memo</h2>
+              <span class="badge muted">可复制</span>
+            </div>
+            <pre id="memoOutput"></pre>
+          </section>
+
+          <section class="panel history-panel" aria-label="历史巡检记录">
+            <div class="panel-header">
+              <h2>历史巡检记录</h2>
+              <span class="badge muted">最近 20 条</span>
+            </div>
+            <div id="historyList" class="history-list"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./schema.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

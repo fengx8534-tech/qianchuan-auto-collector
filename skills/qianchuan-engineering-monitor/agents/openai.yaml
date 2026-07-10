@@ -1,0 +1,4 @@
+name: qianchuan-engineering-monitor
+description: 千川自动化工程监控与自动修复 agent。
+entry: SKILL.md
+version: 1
