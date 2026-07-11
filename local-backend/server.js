@@ -34,6 +34,7 @@ const { buildLiveScreenUrl, buildTaskCenterUrl, findAdContextFromState, findLive
 const { createSingleFlight } = require("./lib/single-flight");
 const { recordCollectionIntegrity, integrityFor } = require("./lib/collection-integrity");
 const { detectManualOperations, snapshotTasks } = require("./lib/operation-learner");
+const { syncDashboardSettings } = require("./lib/dashboard-git-sync");
 
 function loadInvestmentRules() {
   try {
@@ -4051,6 +4052,12 @@ function saveDingTalkConfig(patch = {}) {
   return { ok: true, config: publicDingTalkConfig(state.config) };
 }
 
+async function syncDashboardConfigToGit(config = {}) {
+  const result = await syncDashboardSettings(config);
+  if (!result.ok) console.error(`[dashboard-git-sync] ${result.error || "sync_failed"}`);
+  return result;
+}
+
 const DINGTALK_COLLECTOR_SUPPRESS_MS = 5 * 60 * 1000;
 const DINGTALK_SYSTEM_ALERT_SUPPRESS_MS = 30 * 60 * 1000;
 const dingtalkNoticeAt = new Map();
@@ -5244,7 +5251,8 @@ async function route(req, res) {
 
   if (url.pathname === "/api/config" && req.method === "POST") {
     const config = updateConfigPatch(await readBody(req));
-    return send(res, 200, { ok: true, config: publicConfig(config) });
+    const gitSync = await syncDashboardConfigToGit(config);
+    return send(res, 200, { ok: true, config: publicConfig(config), gitSync });
   }
 
   if (url.pathname === "/api/config" && req.method === "GET") {
@@ -5259,7 +5267,8 @@ async function route(req, res) {
 
   if (url.pathname === "/api/dingtalk/config" && req.method === "POST") {
     const result = saveDingTalkConfig(await readBody(req));
-    return send(res, result.ok ? 200 : 400, result);
+    const gitSync = result.ok ? await syncDashboardConfigToGit(readJson(STATE_FILE, {}).config || {}) : null;
+    return send(res, result.ok ? 200 : 400, { ...result, gitSync });
   }
 
   if (url.pathname === "/api/dingtalk/test" && req.method === "POST") {

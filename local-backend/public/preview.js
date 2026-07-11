@@ -504,7 +504,8 @@ async function saveDingtalkConfig() {
     if (latestState?.config) latestState.config.dingtalk = data.config;
     dingtalkEditing = false;
     renderDingtalkConfig(latestState?.config || { dingtalk: data.config });
-    setDingtalkConfigStatus(data.config?.enabled ? "已保存并启用" : "已保存", data.config?.enabled ? "ready" : "muted");
+    const gitText = data.gitSync?.ok ? (data.gitSync.changed ? "，已同步 Git" : "，Git 已是最新") : "，Git 同步失败";
+    setDingtalkConfigStatus(`${data.config?.enabled ? "已保存并启用" : "已保存"}${gitText}`, data.gitSync?.ok === false ? "warn" : (data.config?.enabled ? "ready" : "muted"));
   } catch (error) {
     setDingtalkConfigStatus(`保存失败：${error.message}`, "danger");
   }
@@ -613,7 +614,8 @@ async function saveInvestmentSop() {
     const data = await postJson("/api/config", { investmentSop: sopDraft });
     if (latestState?.config) latestState.config = data.config || { ...latestState.config, investmentSop: sopDraft };
     sopEditing = false;
-    setSopSaveStatus("已自动保存", "ready");
+    const gitText = data.gitSync?.ok ? (data.gitSync.changed ? "，已同步 Git" : "，Git 已是最新") : "，Git 同步失败";
+    setSopSaveStatus(`已自动保存${gitText}`, data.gitSync?.ok === false ? "warn" : "ready");
     renderAiConfig(latestState?.config || data.config || {});
   } catch (error) {
     setSopSaveStatus(`保存失败：${error.message}`, "danger");
