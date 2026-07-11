@@ -399,6 +399,94 @@ function buildFollowupExpression(action, openedAt) {
   })()`;
 }
 
+function buildPauseConfirmationExpression(action) {
+  const kind = actionKind(action.type);
+  return `(async () => {
+    const action = ${JSON.stringify({ kind })};
+    const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const dialogSelectors = ".ovui-modal, .ovui-popconfirm, .ovui-dialog, [role='dialog'], [class*='modal'], [class*='popover'], [class*='popconfirm']";
+    const expectedWords = action.kind === "end" ? ["结束", "终止", "停止"] : ["暂停", "关停", "停止"];
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let lastDialogText = "";
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const dialogs = Array.from(document.querySelectorAll(dialogSelectors))
+        .filter(isVisible)
+        .map((dialog) => ({ dialog, text: clean(dialog.innerText || dialog.textContent || "") }))
+        .filter(({ text }) => /确认|确定/.test(text) && expectedWords.some((word) => text.includes(word)));
+      const candidate = dialogs[dialogs.length - 1];
+      if (candidate) {
+        lastDialogText = candidate.text.slice(0, 300);
+        const confirm = Array.from(candidate.dialog.querySelectorAll("button, [role=button], a"))
+          .filter(isVisible)
+          .find((button) => {
+            const text = clean(button.innerText || button.textContent || button.getAttribute("aria-label") || "");
+            return /^(确定|确认|提交)$/.test(text) && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+          });
+        if (!confirm) return { ok: false, step: "pause_confirmation", error: "pause_confirm_button_not_found", dialogText: lastDialogText, url: location.href, title: document.title };
+        const confirmText = clean(confirm.innerText || confirm.textContent || confirm.getAttribute("aria-label") || "");
+        confirm.click();
+        return { ok: true, step: "pause_confirm_clicked", confirmText, dialogText: lastDialogText, url: location.href, title: document.title };
+      }
+      await wait(500);
+    }
+    return { ok: false, step: "pause_confirmation", error: "pause_confirm_dialog_not_found", dialogText: lastDialogText, url: location.href, title: document.title };
+  })()`;
+}
+
+function buildVerifyPausedExpression(action) {
+  const payload = action.payload || {};
+  const taskNeedle = String(payload.taskId || payload.taskName || "").trim();
+  const taskId = taskIdFromNeedle(taskNeedle);
+  return `(async () => {
+    const task = ${JSON.stringify({ taskNeedle, taskId })};
+    const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+    const isVisible = (node) => {
+      if (!node) return false;
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const matchesTask = (text) => {
+      const normalized = clean(text);
+      if (task.taskId) {
+        const idPattern = new RegExp("(^|\\\\D)ID[：:]?\\\\s*" + task.taskId + "(?!\\\\d)");
+        return idPattern.test(normalized) || new RegExp("(^|\\\\D)" + task.taskId + "(?!\\\\d)").test(normalized);
+      }
+      return task.taskNeedle && normalized.includes(task.taskNeedle);
+    };
+    const rowSelectors = "tr,[role='row'],[class*='table-row'],[class*='TableRow'],[class*='table_row'],[class*='list-item'],[class*='ListItem']";
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    let lastRowText = "";
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const row = Array.from(document.querySelectorAll(rowSelectors))
+        .filter(isVisible)
+        .find((node) => matchesTask(node.innerText || node.textContent || ""));
+      if (row) {
+        lastRowText = clean(row.innerText || row.textContent || "").slice(0, 500);
+        const statusMatch = lastRowText.match(/(调控暂停|已暂停|暂停中|调控结束|已结束|调控中|进行中)/);
+        const status = statusMatch?.[1] || "";
+        if (/(调控暂停|已暂停|暂停中|调控结束|已结束)/.test(status)) return { ok: true, step: "pause_status_verified", status, rowText: lastRowText, url: location.href, title: document.title };
+        if (attempt === 4) return { ok: false, step: "pause_status_verified", error: "task_still_active", status: status || "unknown", rowText: lastRowText, url: location.href, title: document.title };
+      }
+      await wait(700);
+    }
+    return { ok: false, step: "pause_status_verified", error: "pause_status_not_verified", rowText: lastRowText, url: location.href, title: document.title };
+  })()`;
+}
+
+function isVerifiedPauseResult(confirmation = {}, verification = {}) {
+  return confirmation?.ok === true
+    && confirmation.step === "pause_confirm_clicked"
+    && verification?.ok === true
+    && /(调控暂停|已暂停|暂停中|调控结束|已结束)/.test(String(verification.status || ""));
+}
+
 function buildCreateTaskExpression(action, dryRun) {
   const payload = action.payload || {};
   const type = String(action.type || "");
@@ -761,28 +849,52 @@ async function executeAction(action, options = {}) {
       }
       const openedAt = Date.now();
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      let follow = await client.send("Runtime.evaluate", {
-        expression: buildFollowupExpression(action, openedAt),
-        returnByValue: true,
-      });
-      let followValue = follow.result?.value || {};
-      // Retry once if dialog not visible (pause needs confirm)
-      if (followValue.warning === "confirm_dialog_not_visible") {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        follow = await client.send("Runtime.evaluate", {
+      const kind = actionKind(action.type);
+      const confirmRequired = ["pause_task", "end_task"].includes(action.type);
+      const valueOrError = (response, fallbackError) => {
+        const value = response?.result?.value;
+        if (value && typeof value === "object") return value;
+        const detail = String(response?.exceptionDetails?.exception?.description || response?.exceptionDetails?.text || "").replace(/\s+/g, " ").trim();
+        return { ok: false, error: detail ? `${fallbackError}:${detail.slice(0, 240)}` : fallbackError };
+      };
+      let followValue = {};
+      let verificationValue = {};
+      if (confirmRequired) {
+        const confirmation = await client.send("Runtime.evaluate", {
+          expression: buildPauseConfirmationExpression(action),
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        followValue = valueOrError(confirmation, "pause_confirmation_evaluation_failed");
+        if (followValue.ok === true) {
+          const verification = await client.send("Runtime.evaluate", {
+            expression: buildVerifyPausedExpression(action),
+            returnByValue: true,
+            awaitPromise: true,
+          });
+          verificationValue = valueOrError(verification, "pause_status_verification_evaluation_failed");
+        }
+      } else {
+        const follow = await client.send("Runtime.evaluate", {
           expression: buildFollowupExpression(action, openedAt),
           returnByValue: true,
         });
-        followValue = follow.result?.value || {};
+        followValue = valueOrError(follow, "followup_evaluation_failed");
+        if (followValue.warning === "confirm_dialog_not_visible") {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          const retry = await client.send("Runtime.evaluate", {
+            expression: buildFollowupExpression(action, openedAt),
+            returnByValue: true,
+          });
+          followValue = valueOrError(retry, "followup_evaluation_failed");
+        }
       }
       const afterScreenshot = await capture(client, dataDir, action.id, "after");
       client.close();
-      const kind = actionKind(action.type);
-      const confirmRequired = ["pause_task", "end_task"].includes(action.type);
       const editRequired = ["budget", "duration", "roi"].includes(kind);
       let followupError = followValue.ok === false ? followValue.error || "followup_failed" : "";
-      if (!followupError && confirmRequired && followValue.warning) {
-        followupError = followValue.warning || "confirm_dialog_not_visible";
+      if (!followupError && confirmRequired && !isVerifiedPauseResult(followValue, verificationValue)) {
+        followupError = verificationValue.error || "pause_status_not_verified";
       }
       if (!followupError && editRequired && followValue.warning) {
         followupError = followValue.warning || "edit_dialog_not_visible";
@@ -794,9 +906,9 @@ async function executeAction(action, options = {}) {
         followupError = followValue.warning || "edit_confirm_not_clicked";
       }
       if (followupError) {
-        return { ok: false, error: followupError, attempts, result: hoverValue, followup: followValue, beforeScreenshot, afterScreenshot };
+        return { ok: false, error: followupError, attempts, result: hoverValue, followup: followValue, verification: verificationValue, beforeScreenshot, afterScreenshot };
       }
-      return { ok: true, attempts, result: hoverValue, followup: followValue, beforeScreenshot, afterScreenshot };
+      return { ok: true, attempts, result: hoverValue, followup: followValue, verification: verificationValue, beforeScreenshot, afterScreenshot };
     } catch (error) {
       attempts.push({ tabUrl: tab.url, title: tab.title, error: error.message });
       client.close();
@@ -821,4 +933,4 @@ async function executeAction(action, options = {}) {
   return { ok: false, error: "action_target_not_found_or_not_clickable", attempts };
 }
 
-module.exports = { executeAction, previewTask };
+module.exports = { executeAction, previewTask, isVerifiedPauseResult };

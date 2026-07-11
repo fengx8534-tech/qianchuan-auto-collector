@@ -21,7 +21,7 @@ const deepseek = require("./lib/deepseek");
 const dingtalk = require("./lib/dingtalk");
 const claude = require("./lib/claude");
 const { runVisualCapture } = require("./executor/visual-capture");
-const { executeAction, previewTask } = require("./executor/action-executor");
+const { executeAction, previewTask, isVerifiedPauseResult } = require("./executor/action-executor");
 const { runTaskCollector, stopTaskCollector, defaultStatus: defaultTaskCollectStatus } = require("./executor/task-collector");
 const { runBoardCollector } = require("./executor/board-collector");
 const { runBoardTrendCollector } = require("./executor/board-trend-collector");
@@ -536,6 +536,7 @@ function ensureDataFiles() {
   state.config = migrateConfig(state.config);
   cancelObsoleteAiBoostPauseActions(state);
   cancelObsoleteAutomaticActions(state);
+  reconcileUnverifiedPauseExecutions(state);
   if (state.taskCollectStatus?.running) {
     state.taskCollectStatus = {
       ...(state.taskCollectStatus || {}),
@@ -2571,6 +2572,25 @@ function isCreateActionType(type = "") {
 
 function actionKey(type, payload) {
   return `${type}:${taskIdFromPayload(payload) || "global"}`;
+}
+
+function reconcileUnverifiedPauseExecutions(state = {}) {
+  let corrected = 0;
+  (state.actions || []).forEach((action) => {
+    if (!["pause_task", "end_task"].includes(action.type) || action.status !== "executed" || action.execution?.ok !== true) return;
+    if (isVerifiedPauseResult(action.execution?.followup, action.execution?.verification)) return;
+    action.status = "failed";
+    action.execution = {
+      ...action.execution,
+      ok: false,
+      error: "pause_confirmation_not_verified",
+      reconciliation: "历史执行未包含确认点击与状态回读，已更正为未验证失败。",
+    };
+    state.lastActionAt = state.lastActionAt || {};
+    delete state.lastActionAt[actionKey(action.type, action.payload || {})];
+    corrected += 1;
+  });
+  return corrected;
 }
 
 function actionId(type, payload, now, state = {}) {
