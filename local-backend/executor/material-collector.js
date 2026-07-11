@@ -190,8 +190,8 @@ function buildExtractMaterialsExpression() {
     const rowSelector = "tr,[role='row'],.arco-table-tr,.semi-table-row,.byted-table-row";
     const cellsOf = (row) => Array.from(row.querySelectorAll(cellSelector))
       .filter((cell) => !Array.from(row.querySelectorAll(cellSelector)).some((other) => other !== cell && other.contains(cell)))
-      .map((cell) => clean(cell.innerText || cell.textContent || ""))
-      .filter(Boolean);
+      // Keep blank cells so data cells remain aligned with the header indexes.
+      .map((cell) => clean(cell.innerText || cell.textContent || ""));
     const rows = Array.from(document.querySelectorAll(rowSelector));
     const headerCells = rows.map(cellsOf).find((cells) => cells.some((item) => /素材ID|素材名称|消耗|点击率|转化率|ROI/.test(item))) || [];
     const headerText = headerCells.join(" ");
@@ -215,6 +215,7 @@ function buildExtractMaterialsExpression() {
       cvr: indexOf([/转化率/, /CVR/i]),
       roi: indexOf([/素材ROI/, /^ROI$/, /综合ROI/]),
       boostRoi: indexOf([/追投ROI/, /调控ROI/]),
+      boostStatus: indexOf([/^素材追投$/, /^视频追投$/]),
       createdAt: indexOf([/创建时间/, /创建日期/, /日期/]),
       auditStatus: indexOf([/审核状态/, /状态/]),
       materialType: indexOf([/素材类型/, /类型/]),
@@ -231,6 +232,12 @@ function buildExtractMaterialsExpression() {
       const cvr = indexes.cvr >= 0 ? money(num(cells[indexes.cvr])) : money(num(text.match(/转化率[^\\d-]*(-?\\d[\\d,.]*%?)/)?.[1]));
       const materialRoi = indexes.roi >= 0 ? money(num(cells[indexes.roi])) : null;
       const boostRoi = indexes.boostRoi >= 0 ? money(num(cells[indexes.boostRoi])) : null;
+      const boostStatusText = indexes.boostStatus >= 0 ? clean(cells[indexes.boostStatus]) : "";
+      const boostStatus = /调控中|追投中|投放中/.test(boostStatusText)
+        ? "追投中"
+        : /调控结束|已暂停|未追投|^-$/.test(boostStatusText) || !boostStatusText
+          ? "未追投"
+          : "未识别";
       const createdAt = indexes.createdAt >= 0 ? cells[indexes.createdAt] : (text.match(/20\\d{2}[-/]\\d{1,2}[-/]\\d{1,2}(?:\\s+\\d{1,2}:\\d{2})?/)?.[0] || "");
       const auditStatus = indexes.auditStatus >= 0 ? cells[indexes.auditStatus] : (text.match(/审核通过|审核中|审核未通过|未通过|已通过/)?.[0] || "");
       const materialType = indexes.materialType >= 0 ? cells[indexes.materialType] : (/视频/.test(text) ? "视频" : /图片|图文/.test(text) ? "图片" : "");
@@ -247,6 +254,8 @@ function buildExtractMaterialsExpression() {
         "素材ROI": materialRoi,
         boostRoi,
         "追投ROI": boostRoi,
+        boostStatus,
+        "追投状态": boostStatus,
         createdAt,
         "创建日期": createdAt,
         auditStatus,

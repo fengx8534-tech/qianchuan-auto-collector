@@ -15,6 +15,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withTodayDateRange(url, today) {
+  try {
+    const target = new URL(url);
+    target.searchParams.set("dr", `${today},${today}`);
+    return target.toString();
+  } catch {
+    return "";
+  }
+}
+
 async function evaluate(client, expression) {
   const result = await client.send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   return result.result?.value || null;
@@ -35,27 +45,47 @@ function buildDateProbeExpression(today) {
       if (!match) return "";
       return match[1] + "-" + match[2].padStart(2, "0") + "-" + match[3].padStart(2, "0");
     };
+    const dateList = (value) => Array.from(String(value || "").matchAll(/(20\\d{2})[\\/.-](\\d{1,2})[\\/.-](\\d{1,2})/g))
+      .map((match) => match[1] + "-" + match[2].padStart(2, "0") + "-" + match[3].padStart(2, "0"));
+    const url = new URL(location.href);
+    const urlDates = String(url.searchParams.get("dr") || "").split(",").map(normalizeDate).filter(Boolean);
     const candidates = Array.from(document.querySelectorAll("input,button,[role='button'],[role='combobox'],.arco-picker,.semi-datepicker,[class*='date'],[class*='Date']"))
       .filter(visible)
       .map((node) => {
-        const value = clean(node.value || node.innerText || node.textContent || node.getAttribute("aria-label") || node.getAttribute("title") || "");
-        const date = normalizeDate(value);
+        const parent = node.closest(".arco-picker,.semi-datepicker,[class*='range'],[class*='Range']");
+        const value = clean([node.value, node.innerText, node.textContent, node.getAttribute("aria-label"), node.getAttribute("title"), parent?.innerText, parent?.textContent].filter(Boolean).join(" "));
+        const dates = dateList(value);
+        const date = dates[0] || "";
         const rect = node.getBoundingClientRect();
         const cls = String(node.className || "");
         let score = 0;
-        if (date) score += 140;
+        if (dates.length >= 2) score += 180;
+        else if (date) score += 140;
         if (/picker|date|range|calendar/i.test(cls + " " + node.getAttribute("role"))) score += 60;
         if (node.tagName === "INPUT") score += 35;
         if (rect.top < Math.max(420, window.innerHeight * 0.45)) score += 25;
         if (rect.top > window.innerHeight * 0.8) score -= 80;
-        return { node, value, date, score };
+        return { node, value, date, dates, score };
       })
       .filter((item) => item.date || item.score >= 60)
       .sort((a, b) => b.score - a.score);
-    const current = candidates.find((item) => item.date) || candidates[0];
+    const current = candidates.find((item) => item.dates?.length >= 2) || candidates.find((item) => item.date) || candidates[0];
+    const currentDates = current?.dates?.length ? current.dates : urlDates;
+    const rangeStart = currentDates[0] || "";
+    const rangeEnd = currentDates[1] || currentDates[0] || "";
+    const rangeConfirmed = Boolean(rangeStart && rangeEnd && rangeStart === today && rangeEnd === today);
     const loading = Array.from(document.querySelectorAll("[aria-busy='true'],[class*='loading'],[class*='Loading'],[class*='spin'],[class*='Spin']"))
-      .some((node) => visible(node) && /loading|spin|加载/i.test(String(node.className || "") + " " + clean(node.innerText || node.textContent || "")));
-    return { ok: Boolean(current), today, currentDate: current?.date || "", currentText: current?.value || "", needsSwitch: Boolean(current?.date && current.date !== today), loading };
+      .some((node) => {
+        if (!visible(node)) return false;
+        if (node.getAttribute("aria-busy") === "true") return true;
+        const text = clean(node.innerText || node.textContent || "");
+        return /loading|spin|加载/i.test(String(node.className || "")) && /^(loading|loading\\.{1,3}|加载中|加载中\\.{1,3}|加载\\.{1,3})$/i.test(text);
+      });
+    return {
+      ok: Boolean(current || urlDates.length), today, currentDate: rangeStart, currentText: current?.value || "", currentDates,
+      rangeStart, rangeEnd, rangeConfirmed, urlRange: urlDates, urlRangeConfirmed: urlDates.length === 2 && urlDates[0] === today && urlDates[1] === today,
+      needsSwitch: Boolean((rangeStart || rangeEnd) && !rangeConfirmed), loading, url: location.href,
+    };
   })()`;
 }
 
@@ -97,24 +127,45 @@ async function switchToTodayDate(client) {
   const today = shanghaiToday();
   const before = await evaluate(client, buildDateProbeExpression(today)).catch((error) => ({ ok: false, error: error.message }));
   if (!before?.ok) return { ok: false, skipped: true, reason: before?.error || "date_picker_not_found", today };
-  if (!before.needsSwitch) return { ok: true, changed: false, today, currentDate: before.currentDate };
+  if (before.rangeConfirmed && before.urlRangeConfirmed && !before.loading) {
+    return { ok: true, changed: false, today, currentDate: before.currentDate, currentRange: [before.rangeStart, before.rangeEnd] };
+  }
+
+  const targetUrl = withTodayDateRange(before.url, today);
+  if (targetUrl && !before.urlRangeConfirmed) {
+    await client.send("Page.navigate", { url: targetUrl });
+    const startedAt = Date.now();
+    let last = null;
+    while (Date.now() - startedAt < 12000) {
+      last = await evaluate(client, buildDateProbeExpression(today)).catch((error) => ({ ok: false, error: error.message }));
+      if (last?.rangeConfirmed && last?.urlRangeConfirmed && !last.loading) {
+        return { ok: true, changed: true, method: "url", today, previousRange: [before.rangeStart, before.rangeEnd], currentRange: [last.rangeStart, last.rangeEnd] };
+      }
+      await sleep(300 + Math.floor(Math.random() * 201));
+    }
+  }
+
   const opened = await evaluate(client, buildOpenDatePickerExpression(today)).catch((error) => ({ ok: false, error: error.message }));
   if (!opened?.ok) return { ok: false, reason: opened?.error || "date_picker_open_failed", today };
   const startedAt = Date.now();
-  let selected = null;
-  while (Date.now() - startedAt < 5000) {
-    selected = await evaluate(client, buildSelectTodayExpression(today)).catch((error) => ({ ok: false, error: error.message }));
-    if (selected?.ok) break;
+  let selected = [];
+  while (Date.now() - startedAt < 6000 && selected.length < 2) {
+    const next = await evaluate(client, buildSelectTodayExpression(today)).catch((error) => ({ ok: false, error: error.message }));
+    if (next?.ok) selected.push(next);
+    const probe = await evaluate(client, buildDateProbeExpression(today)).catch(() => null);
+    if (probe?.rangeConfirmed && probe?.urlRangeConfirmed) break;
     await sleep(300 + Math.floor(Math.random() * 201));
   }
-  if (!selected?.ok) return { ok: false, reason: selected?.error || "today_cell_timeout", today };
+  if (!selected.length) return { ok: false, reason: "today_cell_timeout", today };
   let last = null;
   while (Date.now() - startedAt < 12000) {
     last = await evaluate(client, buildDateProbeExpression(today)).catch((error) => ({ ok: false, error: error.message }));
-    if (last?.currentDate === today && !last.loading) return { ok: true, changed: true, today, previousDate: before.currentDate, currentDate: last.currentDate };
+    if (last?.rangeConfirmed && last?.urlRangeConfirmed && !last.loading) {
+      return { ok: true, changed: true, method: "picker_range", today, previousRange: [before.rangeStart, before.rangeEnd], currentRange: [last.rangeStart, last.rangeEnd] };
+    }
     await sleep(300 + Math.floor(Math.random() * 201));
   }
-  return { ok: false, reason: "date_refresh_timeout", today, previousDate: before.currentDate, currentDate: last?.currentDate || "" };
+  return { ok: false, reason: "date_range_unconfirmed", today, previousRange: [before.rangeStart, before.rangeEnd], currentRange: [last?.rangeStart || "", last?.rangeEnd || ""] };
 }
 
 async function listTabs(cdpUrl = DEFAULT_CDP_URL) {

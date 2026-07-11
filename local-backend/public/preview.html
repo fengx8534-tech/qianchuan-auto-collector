@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>千川实时调控台</title>
-    <link rel="stylesheet" href="/assets/preview.css?v=zhanling-profit-model-1" />
+    <link rel="stylesheet" href="/assets/preview.css?v=task-action-feedback-1" />
   </head>
   <body>
     <main class="shell">
@@ -316,7 +316,7 @@
                   <ul>
                     <li>每次加量任务 ≤ 2 个</li>
                     <li>一键起量与素材放量追投互斥（同时开会抢量）</li>
-                    <li>调控后观察 30 分钟：空消耗或消耗 &gt; 100 且 ROI 2-3 → 提醒手动关闭</li>
+                    <li>调控后观察 30 分钟：消耗达到预算 80% 且未成交 → 提醒手动关闭；低消耗暂时观察</li>
                   </ul>
                 </div>
               </details>
@@ -332,6 +332,32 @@
                     <li>新素材优先控成本追投</li>
                     <li>素材筛选：综合 ROI 排序 → 点击率/转化率辅筛</li>
                   </ul>
+                </div>
+              </details>
+
+              <details class="sop-faq-group sop-static-rule">
+                <summary>追投决策框架</summary>
+                <div class="sop-faq-items">
+                  <h4>追投前四层判断</h4>
+                  <ol>
+                    <li><strong>点击稳定性</strong>：点击率、点击单价、进房成本。点击便宜≠流量好。</li>
+                    <li><strong>自然ROI真稳定</strong>：消耗足够+多笔成交+多时段验证。单笔拉高ROI不追。</li>
+                    <li><strong>有效流量</strong>：进房后商品点击率、停留、成交率不低于直播间平均。进房多但商品点击少的属引流素材。</li>
+                    <li><strong>直播间承接</strong>：主推品讲解中+主播稳定+自然成交起来+在线增后商品点击率未降。</li>
+                  </ol>
+                  <h4>素材分类</h4>
+                  <p><strong>点击型素材</strong>：点击便宜但转化差，只观察不追。</p>
+                  <p><strong>成交型素材</strong>：进房人群匹配、转化稳定，优先追投。</p>
+                  <h4>追投后三阶段</h4>
+                  <ul>
+                    <li>前期：消耗速度、点击单价、进房成本是否恶化</li>
+                    <li>中期：商品点击率、停留、分钟级成交是否跟上</li>
+                    <li>后期：边际ROI=新增成交÷新增消耗，低于2不合格</li>
+                  </ul>
+                  <h4>三层判断标准</h4>
+                  <p><strong>可小额测试</strong>：消耗达标+多笔成交+进房成本≤均值20%+商品点击/成交≥平均+商品一致+承接稳定</p>
+                  <p><strong>暂时观察</strong>：ROI高但消耗＜100元或只一两单+趋势不稳+换品/波动期</p>
+                  <p><strong>不建议追投</strong>：消耗涨ROI降+点击高商品点击低+进房成本涨+商品不一致+同质化互抢量</p>
                 </div>
               </details>
             </div>
@@ -477,7 +503,14 @@
           <button type="button" data-material-screen="topSpend">主跑素材</button><button type="button" data-material-screen="comprehensiveRoi">综合ROI</button><button type="button" data-material-screen="highCtr">高点击</button><button type="button" data-material-screen="highCvr">高转化</button>
         </div>
         <div class="create-task-manual"><input id="createTaskManualIds" placeholder="手动输入素材ID，逗号分隔" /><button id="createTaskManualScreen" type="button">验证素材</button></div>
-        <p id="createTaskScreenStatus" class="manual-action-result"></p><div id="createTaskCandidates" class="create-task-candidates"></div>
+        <p id="createTaskScreenStatus" class="manual-action-result"></p>
+        <div id="createTaskBatch" class="create-task-batch" hidden>
+          <span id="createTaskSelectionCount">已选 0 条</span>
+          <button id="createTaskSelectAll" type="button">全选本轮</button>
+          <button id="createTaskClearAll" type="button">取消全选</button>
+          <button id="createTaskUseSelected" type="button">使用已选素材</button>
+        </div>
+        <div id="createTaskCandidates" class="create-task-candidates"></div>
       </section>
       <section class="create-task-step" id="createTaskStepParams" hidden>
         <h3>第三步：调整参数</h3>
@@ -509,6 +542,6 @@
       </form>
     </dialog>
 
-    <script src="/assets/preview.js?v=zhanling-profit-model-1"></script>
+    <script src="/assets/preview.js?v=task-action-feedback-1"></script>
   </body>
 </html>

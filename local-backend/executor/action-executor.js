@@ -36,6 +36,13 @@ function isCreateAction(type = "") {
   return ["create_boost_task", "create_oneclick_task"].includes(String(type || ""));
 }
 
+function normalizeMaterialIds(value, fallback = "") {
+  const raw = Array.isArray(value) ? value : String(value || "").split(/[,，\s]+/);
+  const ids = raw.map((item) => String(item || "").trim()).filter((item) => /^\d{8,}$/.test(item));
+  if (!ids.length && /^\d{8,}$/.test(String(fallback || "").trim())) ids.push(String(fallback).trim());
+  return Array.from(new Set(ids)).slice(0, 10);
+}
+
 function taskIdFromNeedle(value = "") {
   const text = String(value || "");
   const match = text.match(/ID[：:]?\s*(\d{8,})/) || text.match(/\b(\d{12,})\b/);
@@ -323,8 +330,27 @@ function buildFollowupExpression(action, openedAt) {
     if (!dialog) return { ok: true, step: "opened_dialog", inputChanged: false, warning: "confirm_dialog_not_visible", url: location.href, title: document.title };
     const buttons = visible(dialog, "button, [role=button], a");
     const buttonByText = (patterns) => buttons.find((button) => patterns.some((pattern) => clean(button.innerText || button.textContent || button.getAttribute("aria-label") || "").includes(pattern)));
-    const inputs = visible(dialog, "input").filter((input) => !input.disabled && !input.readOnly);
+    const enabledInputs = () => visible(dialog, "input").filter((input) => !input.disabled && !input.readOnly);
     const inputContext = (input) => clean(input.closest("label, .ovui-form-item, .form-item, [class*='form'], [class*='item'], div")?.innerText || "");
+    const findInputWithScroll = async (contextPattern, attributePattern, exclude = null) => {
+      const find = () => enabledInputs().find((item) => item !== exclude && (contextPattern.test(inputContext(item)) || attributePattern.test(clean(item.placeholder || item.name || item.id || ""))));
+      let input = find();
+      if (input) return input;
+      const scrollTargets = [dialog, ...visible(dialog, "[class*='body'], [class*='content'], [class*='scroll']")]
+        .filter((item, index, list) => list.indexOf(item) === index)
+        .filter((item) => item.scrollHeight > item.clientHeight + 40);
+      for (const target of scrollTargets) {
+        const maxTop = Math.max(0, target.scrollHeight - target.clientHeight);
+        for (const top of [Math.round(maxTop * 0.35), Math.round(maxTop * 0.7), maxTop]) {
+          target.scrollTop = top;
+          target.dispatchEvent(new Event("scroll", { bubbles: true }));
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          input = find();
+          if (input) return input;
+        }
+      }
+      return null;
+    };
     const setInputValue = (input, value) => {
       input.focus();
       input.value = String(value);
@@ -346,23 +372,20 @@ function buildFollowupExpression(action, openedAt) {
     }
     let budgetInput = null;
     if (shouldSetBudget) {
-      budgetInput = inputs.find((item) => /预算|金额|加量|出价/.test(inputContext(item)));
-      if (!budgetInput) budgetInput = inputs.find((item) => /budget|amount|price/i.test(clean(item.placeholder || item.name || item.id || "")));
+      budgetInput = await findInputWithScroll(/预算|金额|加量|出价/, /budget|amount|price/i);
       const input = budgetInput;
       if (!input) return { ok: false, step: "find_budget_input", error: "budget_input_not_found", inputChanged, url: location.href, title: document.title };
       setInputValue(input, action.budget);
       inputChanged = true;
     }
     if (shouldSetDuration) {
-      const input = inputs.find((item) => item !== budgetInput && /时长|小时|结束|投放时长|持续/.test(inputContext(item)))
-        || inputs.find((item) => item !== budgetInput && /duration|hour|time|end/i.test(clean(item.placeholder || item.name || item.id || "")));
+      const input = await findInputWithScroll(/时长|小时|结束|投放时长|持续/, /duration|hour|time|end/i, budgetInput);
       if (!input) return { ok: false, step: "find_duration_input", error: "duration_input_not_found", inputChanged, url: location.href, title: document.title };
       setInputValue(input, action.durationHours);
       inputChanged = true;
     }
     if (shouldSetRoi) {
-      const input = inputs.find((item) => /ROI|roi|目标|出价/.test(inputContext(item)))
-        || inputs.find((item) => /roi|target|bid/i.test(clean(item.placeholder || item.name || item.id || "")));
+      const input = await findInputWithScroll(/ROI|roi|目标|出价/, /roi|target|bid/i, budgetInput);
       if (!input) return { ok: false, step: "find_roi_input", error: "roi_input_not_found", inputChanged, url: location.href, title: document.title };
       setInputValue(input, action.targetRoi);
       inputChanged = true;
@@ -394,6 +417,7 @@ function buildCreateTaskExpression(action, dryRun) {
         payRoi: payload.payRoi,
         bidPrice: payload.bidPrice,
         materialId: payload.materialId,
+        materialIds: normalizeMaterialIds(payload.materialIds, payload.materialId),
         useLiveRoomImage: payload.useLiveRoomImage !== false,
       },
     })};
@@ -457,15 +481,17 @@ function buildCreateTaskExpression(action, dryRun) {
         steps.push(live);
         if (!live.ok) return { ok: false, dryRun: action.dryRun, steps };
         await wait(400);
-      } else if (action.payload.materialId) {
-        const materialRows = visible("tr, [class*='row'], [class*='item'], li").filter((node) => textOf(node).includes(String(action.payload.materialId)));
-        const row = materialRows[0];
-        if (!row) return { ok: false, dryRun: action.dryRun, step: "find_material", error: "material_id_not_found", materialId: action.payload.materialId, steps, url: location.href, title: document.title };
-        row.scrollIntoView({ block: "center", inline: "center" });
-        const checkbox = visible("input[type='checkbox'], [role='checkbox'], .ovui-checkbox, label", row)[0] || row;
-        steps.push({ ok: true, step: "find_material", materialId: action.payload.materialId, rowText: textOf(row).slice(0, 160) });
-        checkbox.click();
-        await wait(400);
+      } else if (action.payload.materialIds?.length) {
+        for (const materialId of action.payload.materialIds) {
+          const materialRows = visible("tr, [class*='row'], [class*='item'], li").filter((node) => textOf(node).includes(String(materialId)));
+          const row = materialRows[0];
+          if (!row) return { ok: false, dryRun: action.dryRun, step: "find_material", error: "material_id_not_found", materialId, steps, url: location.href, title: document.title };
+          row.scrollIntoView({ block: "center", inline: "center" });
+          const checkbox = visible("input[type='checkbox'], [role='checkbox'], .ovui-checkbox, label", row)[0] || row;
+          steps.push({ ok: true, step: "find_material", materialId, rowText: textOf(row).slice(0, 160) });
+          checkbox.click();
+          await wait(400);
+        }
       }
     } else {
       window.scrollTo({ top: document.body.scrollHeight * 0.45, behavior: "instant" });
@@ -600,7 +626,8 @@ async function previewTask(params = {}, options = {}) {
     id: `preview-${Date.now()}`,
     type: oneclick ? "create_oneclick_task" : "create_boost_task",
     payload: {
-      materialId: params.materialId || undefined,
+      materialId: normalizeMaterialIds(params.materialIds, params.materialId)[0] || undefined,
+      materialIds: normalizeMaterialIds(params.materialIds, params.materialId),
       budget: Number(params.budget),
       durationHours: Number(params.durationHours),
       targetRoi: oneclick ? undefined : Number(params.targetRoi) || undefined,
@@ -612,7 +639,7 @@ async function previewTask(params = {}, options = {}) {
   };
   if (!Number.isFinite(action.payload.budget) || action.payload.budget <= 0) return { ok: false, error: "budget_required" };
   if (!Number.isFinite(action.payload.durationHours) || action.payload.durationHours <= 0) return { ok: false, error: "duration_required" };
-  if (!oneclick && !liveScreenBoost && !action.payload.materialId) return { ok: false, error: "material_id_required" };
+  if (!oneclick && !liveScreenBoost && !action.payload.materialIds.length) return { ok: false, error: "material_id_required" };
   const liveSourceScreenshot = action.payload.useLiveRoomImage ? await captureLiveBoardScreenshot(options, action.id) : "";
   const result = await executeCreateAction(action, { ...options, dryRun: true });
   return {
@@ -624,6 +651,7 @@ async function previewTask(params = {}, options = {}) {
     formSummary: {
       type,
       materialId: action.payload.materialId || "直播间画面",
+      materialIds: action.payload.materialIds,
       budget: action.payload.budget,
       durationHours: action.payload.durationHours,
       targetRoi: action.payload.targetRoi || action.payload.payRoi || null,

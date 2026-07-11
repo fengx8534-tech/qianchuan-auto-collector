@@ -1436,6 +1436,7 @@ async function collectHourlyBreakdown(options = {}, allTabs = []) {
       }).catch(() => null);
     }
     const dateSwitch = await switchToTodayDate(client).catch((error) => ({ ok: false, reason: error.message }));
+    if (!dateSwitch.ok) throw new Error(`hourly_date_range_unconfirmed:${dateSwitch.reason || "unknown"}`);
     const totalBaseToggle = await setHourlyBaseOnly(client, false, { attempts: 3, settleMs: 1800 });
     if (!totalBaseToggle.ok) throw new Error(`hourly_total_toggle_unconfirmed:${totalBaseToggle.reason || "unknown"}`);
     for (let i = 0; i < 3; i += 1) {
@@ -1568,6 +1569,7 @@ async function collectExistingTab(tab, pageType, label, dataDir, collectedAt, op
     }
     await waitForPageTypeReady(client, pageType);
     const dateSwitch = await switchToTodayDate(client).catch((error) => ({ ok: false, reason: error.message }));
+    if (!dateSwitch.ok) throw new Error(`visual_date_range_unconfirmed:${dateSwitch.reason || "unknown"}`);
     const taskPrepare = await prepareTabForTaskRoute(client, options.route);
     await prepareTabForPageType(client, pageType);
     const evalResult = await client.send("Runtime.evaluate", {
@@ -1608,6 +1610,7 @@ async function collectAutoPage(client, target, dataDir, collectedAt) {
   await autoNavigate(client, target.url, { timeout: 6000 });
   await waitForPageTypeReady(client, target.pageType);
   const dateSwitch = await switchToTodayDate(client).catch((error) => ({ ok: false, reason: error.message }));
+  if (!dateSwitch.ok) throw new Error(`auto_date_range_unconfirmed:${dateSwitch.reason || "unknown"}`);
   const taskPrepare = await prepareTabForTaskRoute(client, target.route);
   await prepareTabForPageType(client, target.pageType);
   const evalResult = await client.send("Runtime.evaluate", {

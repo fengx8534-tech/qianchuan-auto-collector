@@ -336,6 +336,7 @@ async function runPlanCollector(options = {}) {
     await client.send("Page.enable").catch(() => null);
     await randomDelay();
     const dateSwitch = await switchToTodayDate(client).catch((error) => ({ ok: false, reason: error.message }));
+    if (!dateSwitch.ok) throw new Error(`plan_date_range_unconfirmed:${dateSwitch.reason || "unknown"}`);
     await preparePlanPage(client);
     let page = await waitForPlan(client, 8000);
     let reloaded = false;

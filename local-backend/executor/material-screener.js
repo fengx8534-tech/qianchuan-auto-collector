@@ -37,20 +37,21 @@ async function screenMaterials(type, manualIds = [], options = {}) {
   consecutiveFailures = 0;
   const all = Array.isArray(result.materials) ? result.materials : [];
   let materials = all;
-  let limit = 3;
+  const maxCandidates = 10;
+  let limit = maxCandidates;
   if (type === "manual") {
     const wanted = new Set((Array.isArray(manualIds) ? manualIds : []).map((id) => String(id).trim()).filter(Boolean));
     materials = all.filter((item) => wanted.has(materialIdOf(item)));
-    limit = wanted.size;
+    limit = Math.min(wanted.size, maxCandidates);
   } else if (type === "comprehensiveRoi") {
     materials = sortBy(all, "materialRoi");
-    limit = 5;
+    limit = maxCandidates;
   } else if (type === "highCtr") {
     materials = sortBy(all, "ctr");
-    limit = 5;
+    limit = maxCandidates;
   } else if (type === "highCvr") {
     materials = sortBy(all, "cvr");
-    limit = 5;
+    limit = maxCandidates;
   } else {
     materials = sortBy(all, "spend");
   }

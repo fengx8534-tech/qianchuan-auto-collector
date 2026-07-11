@@ -955,6 +955,7 @@ async function runTaskCollector(options = {}) {
       taskRowCount: 0,
       firstTaskName: "",
     });
+    if (!dateSwitch.ok) throw new Error(`task_date_range_unconfirmed:${dateSwitch.reason || "unknown"}`);
 
     const extractExpression = buildExtractTasksExpression();
     updateStatus(runOptions, { currentStep: "basic", stepLabel: "等待任务表格渲染" });

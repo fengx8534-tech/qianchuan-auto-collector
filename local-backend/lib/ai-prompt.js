@@ -81,6 +81,17 @@ function recentFeedbackPrompt() {
   return `${header}\n${lines.join("\n")}`;
 }
 
+function recentManualOperations() {
+  return readJsonl(LEARNING_LOG_FILE, 200)
+    .filter((item) => item.type === "user_manual_operation" && item.operation)
+    .slice(-5)
+    .map((item) => ({
+      action: String(item.operation.action || ""),
+      time: item.receivedAt,
+      context: item.operation.context || {},
+    }));
+}
+
 function formatInvestmentSop(sop = {}) {
   if (!sop || typeof sop !== "object") return "## 投放SOP（运营制定，严格遵守）\n未配置，按默认谨慎策略执行。";
   const faq = Array.isArray(sop.faq) ? sop.faq.map((group) => {
@@ -267,7 +278,7 @@ function buildSystemPrompt() {
     "顶层 reasoning 必须分三段，用两个换行分隔，段落标题固定为：当前盘况：、主要问题：、建议方向：。当前盘况段必须包含：综合ROI、基础消耗、追投消耗、追投占比（从 boostAnalysis 字段读取）、小时段消耗、小时段追投占比、GPM（metrics.gpm）、实时在线人数（metrics.onlineCount）、曝光观看率（metrics.exposureWatchRate）、观看成交率（metrics.watchDealRate）。结合直播间承接能力（在线人数+GPM+曝光观看率+观看成交率）判断是否适合放量。",
     "每条 action.reason 必须分三段，用两个换行分隔，段落标题固定为：诊断：、动作：、预期：。",
     "increase_task_budget 只有 task.roi > targetRoi × 1.2 才允许；budget 必须是新预算具体数字；加量幅度 = min(原预算 × 0.5, userPayload.constraints.maxBudgetIncrease)，新预算 = 原预算 + 加量幅度，不要直接乘 1.5。",
-    "pause_task 只有 task.roi < targetRoi × 0.5 且 spend > budget × 0.5 才允许。",
+    "暂停/结束追投硬约束：对于素材放量追投和素材控成本追投，只有任务消耗达到预算的80%及以上、且已确认成交金额和订单数均为0时，才允许建议暂停或结束；消耗不足预算80%的低消耗任务，无论运行多久、ROI多低或追投占比多高，都只能 observe，不能建议关闭。其他类型任务仍按各自暂停规则判断。",
     "create_boost_task 必须给出 materialId、budget、durationHours、targetRoi，并说明素材属于哪一层；追投占比达到 28% 或素材 ROI < 2.0 或审核未通过时禁止创建。",
     "create_oneclick_task 只能在综合 ROI > 目标 × 0.8 且在线人数 > 20 时建议；预算 ≤ 基础消耗 × 20%、≤ 500 元，时长 ≤ 3 小时。注意：这里的目标 × 0.8 只是最低准入/观察线，不代表高 ROI。",
     "ROI 分档硬规则：当前小时 ROI >= 目标 ROI 才能称为高 ROI；目标 × 0.8 <= 当前小时 ROI < 目标 ROI 只能称为观察区/接近观察线，必须明确“不达标、不算高 ROI”；当前小时 ROI < 目标 × 0.8 称为低于观察线；task 加预算必须 task.roi > 目标 × 1.2。",
@@ -280,6 +291,7 @@ function buildSystemPrompt() {
     "输出必须是严格 JSON：{\"decision\":\"act|observe\",\"reasoning\":\"当前盘况：...\\n\\n主要问题：...\\n\\n建议方向：...\",\"actions\":[{\"type\":\"...\",\"params\":{},\"reason\":\"诊断：...\\n\\n动作：...\\n\\n预期：...\",\"confidence\":0.8}]}",
     "每次决策必须读取 userPayload.config.investmentSop，并严格遵守其中的基础参数、场景规则、暂停条件、加量条件、降ROI条件和排查路径。",
     "每次涉及追投建议时必须读取 userPayload.materialLibrarySummary；如果生成 create_boost_task 或 create_oneclick_task，reason 必须写明选了什么素材、属于哪一层、为什么选它、预测效果。",
+    "userPayload.recentManualOperations 包含用户最近5次在千川上的手动操作记录。决策时必须参考这些操作——如果用户之前遇到类似情况时做了某个操作，可以优先参考该操作方向；但不代表必须重复相同操作。",
     "基础消耗优先原则：基础消耗（全天 + 单小时）是跑量核心。基础消耗差时，即使使用一键起量或素材追投效果也不会好。必须先观察基础消耗趋势再决定是否调控。",
     "低流速测试原则：每 5 分钟流速 < 100 时，可以小额测试素材追投（预算 ≤ 150 元），目标是提升流速至 130 以上。但此操作仅在基础消耗不差时适用。",
     "高流速判断：每 5 分钟流速 > 200 时，如果单小时转化没有断成交、直播大屏成交金额曲线不下滑，则不调整；只有转化困难时才小幅度上抬 0.5 ROI。",
@@ -292,10 +304,16 @@ function buildSystemPrompt() {
     "起量追投互斥：create_oneclick_task 和 create_boost_task（放量追投）不能同时建议——两者会互相抢量导致调控不稳定。同一次决策只能选其一。",
     "素材控成本出价公式：create_boost_task（控成本模式）的出价 = 客单价 329 ÷ userPayload.constraints.targetRoi。例如 targetRoi=6.3 时出价=52。支付 ROI 等于目标 ROI。",
     "直播间画面追投条件：单小时 ROI 达到 4-5（目标 ROI 为 6.3 时），可以使用直播间画面放量追投补充流速，预算 100-200 元、时长 1 小时。单小时 ROI < 4 时不建议画面追投。",
-    "放量追投预算：create_boost_task 放量模式预算 200-300 元/1 小时。如果当前转化低，降为 150 元/1 小时。追投后消耗超预算 70% 仍无转化时，触发’建议手动关闭’。",
+    "放量追投预算：create_boost_task 放量模式预算 200-300 元/1 小时。如果当前转化低，降为 150 元/1 小时。追投后只有消耗达到预算80%及以上且确认零成交时，才触发‘建议手动关闭’；低消耗零成交继续观察。",
     "新素材策略：48 小时内创建的新素材，优先使用控成本追投方式，不用放量追投。",
-    "调控后观察期：任何调控动作执行后，接下来 30 分钟内只观察不追加新动作。如果 30 分钟内出现空消耗，或消耗 > 100 元且 ROI 降至 2-3，提醒操作人手动关闭。",
+    "调控后观察期：任何调控动作执行后，接下来30分钟内只观察不追加新动作。素材追投在消耗不足预算80%时，即使暂未成交也继续观察；只有达到预算80%及以上且确认零成交，才提醒操作人手动关闭。",
     "素材筛选方式：素材追投选品时，先按综合 ROI 排序筛选高 ROI 潜力素材，再参考点击率和转化率筛选高点击、高转化素材。ROI 处于 2-3 且转化率低的素材不追投。",
+    "追投四层判断顺序（严格遵守）：第一步看素材点击稳定性（点击率、点击单价、进房成本），点击单价低不代表流量好；第二步看自然ROI是否真稳定（消耗需达一定量、多笔成交、多时段验证），单笔订单拉高ROI的素材不追；第三步看进房后是否为有效流量（商品点击率、停留、成交率不低于直播间平均水平），进房多但商品点击少的属于引流素材不追；第四步看直播间当前承接能力（主推品讲解中、主播状态稳定、自然成交已起来、在线增长后商品点击率未降）。",
+    "素材分类原则：区分点击型素材（点击便宜但进房后转化差）和成交型素材（进房人群与商品匹配、转化稳定）。优先追成交型素材，点击型素材只观察不追投。",
+    "追投后三阶段监控：前期看消耗速度、点击单价、进房成本是否恶化；中期看商品点击率、在线停留、分钟级成交有没有跟上；后期看边际ROI（追投新增成交÷追投新增消耗），这才是追投真实效果，页面展示的累计ROI不能作为追投判断依据。",
+    "追投边际ROI硬规则：追投边际ROI低于2时该追投不合格；但素材追投仍须先达到预算消耗80%及以上且确认零成交，才可建议暂停或不再续时。新增消耗明显快于新增成交但消耗未达80%预算时，只观察不关闭。",
+    "三层追投判断标准：可小额测试——素材已有一定消耗和多笔成交、自然ROI高于保本线、进房成本不高于均值20%、商品点击/成交率不低于直播间平均、素材与当前主讲商品一致、直播间承接状态稳定；暂时观察——ROI高但消耗不足100元或只一两单、刚出量趋势不稳、直播间正在换品或流量波动；不建议追投——消耗上涨ROI明显下降、点击率高但商品点击率低、进房成本越来越高、素材与商品不一致、同质化素材多条同时追投内部抢量。",
+    "每次追投建议必须说明素材属于点击型还是成交型，基于哪一层判断触发，建议处于三层标准的哪一类。create_boost_task 的 reason 必须包含：素材分层、进房成本对比、商品点击率对比、当前直播间承接状态。",
     "主播轮班保护：换播时间 10:00/14:00/18:00/22:00，各 ±15 分钟不调控。userPayload.shiftProtection=true 时直接 observe。",
     "",
     recentFeedbackPrompt(),
@@ -382,6 +400,7 @@ function buildUserPayload(state) {
     },
     tasks,
     recentActions: (state.actions || []).slice(0, 5),
+    recentManualOperations: recentManualOperations(),
     constraints: {
       accountId: config.expectedAccountId,
       openTime: config.openTime,
@@ -390,7 +409,7 @@ function buildUserPayload(state) {
       maxRoiStep: num(config.investmentSop?.roiStep) || 0.2,
       maxBudgetIncrease: num(config.investmentSop?.maxBudgetIncrease) || 200,
       increaseBudgetRule: "仅当 task.roi > targetRoi * 1.2；新预算 = 原预算 + min(原预算 * 0.5, maxBudgetIncrease)",
-      pauseTaskRule: "仅当 task.roi < targetRoi * 0.5 且 spend > budget * 0.5",
+      pauseTaskRule: "素材追投/控成本追投仅当消耗 >= 预算 * 0.8 且确认零成交；低消耗任务只观察",
       allowedActions: ["raise_roi_target", "lower_roi_target", "pause_task", "increase_task_budget", "decrease_task_budget", "create_boost_task", "create_oneclick_task"],
       createActionRules: "create_boost_task/create_oneclick_task 需要人工审批；首次强制 dryRun；追投占比 >= 28% 禁止新增追投；单日自主建任务 <= 5；两次建任务间隔 >= 30 分钟。",
     },

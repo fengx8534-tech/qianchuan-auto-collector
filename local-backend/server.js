@@ -33,6 +33,7 @@ const { summarizeEngineeringHealth } = require("./lib/health-monitor");
 const { buildLiveScreenUrl, buildTaskCenterUrl, findAdContextFromState, findLiveContextFromState, hasAdContext, taskCenterUrlFromSource } = require("./lib/qianchuan-url");
 const { createSingleFlight } = require("./lib/single-flight");
 const { recordCollectionIntegrity, integrityFor } = require("./lib/collection-integrity");
+const { detectManualOperations, snapshotTasks } = require("./lib/operation-learner");
 
 function loadInvestmentRules() {
   try {
@@ -519,6 +520,7 @@ function ensureDataFiles() {
     return;
   }
   state.config = migrateConfig(state.config);
+  cancelObsoleteAiBoostPauseActions(state);
   if (state.taskCollectStatus?.running) {
     state.taskCollectStatus = {
       ...(state.taskCollectStatus || {}),
@@ -2541,6 +2543,13 @@ function taskIdFromPayload(payload = {}) {
   return match?.[1] || "";
 }
 
+function materialIdsFromPayload(value, fallback = "") {
+  const raw = Array.isArray(value) ? value : String(value || "").split(/[,，\s]+/);
+  const ids = raw.map((item) => String(item || "").trim()).filter((item) => /^\d{8,}$/.test(item));
+  if (!ids.length && /^\d{8,}$/.test(String(fallback || "").trim())) ids.push(String(fallback).trim());
+  return Array.from(new Set(ids)).slice(0, 10);
+}
+
 function isCreateActionType(type = "") {
   return ["create_boost_task", "create_oneclick_task"].includes(String(type || ""));
 }
@@ -2576,11 +2585,11 @@ function currentBoostRatioValue(state = {}) {
   return null;
 }
 
-function createActionLimitResult(state = {}, type = "", now = Date.now()) {
+function createActionLimitResult(state = {}, type = "", now = Date.now(), options = {}) {
   if (!isCreateActionType(type)) return { ok: true };
   const boostRatio = currentBoostRatioValue(state);
   const boostRatioLimit = 28;
-  if (Number.isFinite(boostRatio) && boostRatio >= boostRatioLimit) {
+  if (Number.isFinite(boostRatio) && boostRatio >= boostRatioLimit && options.allowManualBoostOverride !== true) {
     return {
       ok: false,
       reason: "boost_ratio_guard",
@@ -2601,11 +2610,11 @@ function createActionLimitResult(state = {}, type = "", now = Date.now()) {
   return { ok: true };
 }
 
-function canCreateAction(state, type, payload, now) {
+function canCreateAction(state, type, payload, now, options = {}) {
   const config = state.config;
   const key = actionKey(type, payload);
   state.lastCreateActionReject = null;
-  const createLimit = createActionLimitResult(state, type, now);
+  const createLimit = createActionLimitResult(state, type, now, options);
   if (!createLimit.ok) {
     state.lastCreateActionReject = { type, payload, at: now, ...createLimit };
     return false;
@@ -2626,8 +2635,8 @@ function canCreateAction(state, type, payload, now) {
   return true;
 }
 
-function pushAction(state, type, title, payload, reason, now, source = "rule") {
-  if (!canCreateAction(state, type, payload, now)) return null;
+function pushAction(state, type, title, payload, reason, now, source = "rule", options = {}) {
+  if (!canCreateAction(state, type, payload, now, options)) return null;
   const key = actionKey(type, payload);
   const action = {
     id: actionId(type, payload, now, state),
@@ -2651,9 +2660,82 @@ function judgeTask(task, globalTargetRoi) {
   const roi = num(task.roi);
   const spend = num(task.spend);
   const budget = num(task.budget);
-  if (Number.isFinite(roi) && Number.isFinite(spend) && Number.isFinite(budget) && roi < target * 0.5 && spend > budget * 0.8) return "pause";
+  if (isBoostTask(task) && taskHasConfirmedZeroDeals(task) && Number.isFinite(roi) && Number.isFinite(spend) && Number.isFinite(budget) && budget > 0 && roi < target * 0.5 && spend >= budget * 0.8) return "pause";
   if (Number.isFinite(roi) && roi >= target * 1.1 && Number.isFinite(budget) && Number.isFinite(spend) && spend > budget * 0.6) return "increase_budget";
   return "";
+}
+
+function isBoostTask(task = {}) {
+  return ["materialBoost", "materialCostControl"].includes(String(task.taskType || task.type || ""));
+}
+
+function taskHasConfirmedZeroDeals(task = {}) {
+  const values = [task.dealAmount, task.orderCount, task.orders, task.transactions]
+    .map((value) => num(value))
+    .filter(Number.isFinite);
+  return values.length > 0 && values.every((value) => value <= 0);
+}
+
+function findAiActionTask(state = {}, action = {}) {
+  const params = action.params || {};
+  const taskId = String(params.taskId || action.taskId || "").trim();
+  const taskName = String(params.taskName || action.taskName || "").trim();
+  return (state.metrics?.tasks || []).find((task) => String(task.taskId || task.id || "") === taskId
+    || (taskName && String(task.name || task.taskName || "").includes(taskName))) || null;
+}
+
+function boostPauseGuardReason(state = {}, action = {}) {
+  if (!["pause_task", "end_task"].includes(String(action.type || ""))) return "";
+  const task = findAiActionTask(state, action);
+  if (!task || !isBoostTask(task)) return "";
+  const spend = num(task.spend);
+  const budget = num(task.budget);
+  if (!Number.isFinite(spend) || !Number.isFinite(budget) || budget <= 0) return "追投任务缺少有效消耗或预算，不能建议关闭，应继续观察。";
+  if (spend < budget * 0.8) return `追投任务仅消耗 ${spend}/${budget} 元，未达到预算80%，按低消耗保护继续观察。`;
+  if (!taskHasConfirmedZeroDeals(task)) return "追投任务已有成交或未采集到确认的零成交数据，不能按零成交规则建议关闭。";
+  return "";
+}
+
+function applyBoostPauseGuard(state = {}, result = {}) {
+  if (result?.decision !== "act" || !Array.isArray(result.actions)) return result;
+  const blocked = [];
+  const actions = result.actions.filter((action) => {
+    const reason = boostPauseGuardReason(state, action);
+    if (!reason) return true;
+    blocked.push({ type: action.type, taskId: action.params?.taskId || action.taskId || "", reason });
+    return false;
+  });
+  if (!blocked.length) return result;
+  result.actions = actions;
+  result.boostPauseGuard = blocked;
+  if (!actions.length) result.decision = "observe";
+  return result;
+}
+
+function cancelObsoleteAiBoostPauseActions(state = {}, now = Date.now()) {
+  let cancelled = 0;
+  (state.actions || []).forEach((action) => {
+    if (action.source !== "ai" || !["pending_review", "ready_to_execute", "approved"].includes(action.status)) return;
+    const reason = boostPauseGuardReason(state, action) || historicalLowSpendBoostPauseReason(action);
+    if (!reason) return;
+    action.status = "cancelled";
+    action.cancelledAt = now;
+    action.cancelReason = `已按追投低消耗保护撤销：${reason}`;
+    cancelled += 1;
+  });
+  return cancelled;
+}
+
+function historicalLowSpendBoostPauseReason(action = {}) {
+  if (!["pause_task", "end_task"].includes(String(action.type || ""))) return "";
+  const text = String(action.reason || action.title || "");
+  if (!/素材放量追投|素材控成本追投|素材追投/.test(text) || !/无任何转化|零成交|0\s*成交|成交\s*0/.test(text)) return "";
+  const match = text.match(/预算\s*(\d+(?:\.\d+)?)\s*元?[，,。\s]*已消耗\s*(\d+(?:\.\d+)?)/);
+  if (!match) return "";
+  const budget = Number(match[1]);
+  const spend = Number(match[2]);
+  if (!Number.isFinite(budget) || !Number.isFinite(spend) || budget <= 0 || spend >= budget * 0.8) return "";
+  return `AI 建议生成时记录为消耗 ${spend}/${budget} 元且零成交，未达到预算80%，按低消耗保护继续观察。`;
 }
 
 function ruleLog(name, triggered, reason) {
@@ -2714,7 +2796,7 @@ function runRules(state, snapshots) {
     const decision = judgeTask(task, config.targetRoi);
     rulesEvaluated.push(ruleLog(`task_${task.name || "unknown"}`, Boolean(decision), decision || "任务未触发动作"));
     if (decision === "pause") {
-      const action = pushAction(state, `pause_task_${task.name || task.id || "unknown"}`, "暂停低效追投任务", { taskName: task.name, taskId: task.id }, `任务ROI ${task.roi} 明显低于目标且预算消耗过高`, now, "rule");
+      const action = pushAction(state, `pause_task_${task.name || task.id || "unknown"}`, "暂停零成交且预算消耗达80%的追投任务", { taskName: task.name, taskId: task.id }, `任务已消耗预算80%及以上且确认零成交，ROI ${task.roi} 明显低于目标`, now, "rule");
       if (action) created.push(action);
     }
     if (decision === "increase_budget") {
@@ -2748,6 +2830,8 @@ async function runAiDecision(state, receivedAt) {
   const payload = { config: state.config, systemPrompt: enrichedSystemPrompt, userPayload };
   let result = await deepseek.decide(payload);
   result = appendRoiLanguageCorrection(result, state);
+  result = applyBoostPauseGuard(state, result);
+  cancelObsoleteAiBoostPauseActions(state, receivedAt);
   state.aiInProgress = false;
   state.lastAiCallAt = receivedAt;
   appendJsonl(AI_LOG_FILE, { ts: receivedAt, payload: userPayload, result });
@@ -2784,6 +2868,7 @@ async function triggerAiNow(options = {}) {
   recoverConsistentSpendMetrics(state, receivedAt);
   updateHourlySegmentMetrics(state, receivedAt);
   sanitizeStaleMetricState(state, receivedAt);
+  cancelObsoleteAiBoostPauseActions(state, receivedAt);
   state.aiInProgress = true;
   writeJson(STATE_FILE, state);
   const userPayload = buildUserPayload(state);
@@ -2797,6 +2882,7 @@ async function triggerAiNow(options = {}) {
   const payload = { config: state.config, systemPrompt: enrichedSystemPrompt, userPayload };
   let result = await deepseek.decide(payload);
   result = appendRoiLanguageCorrection(result, state);
+  result = applyBoostPauseGuard(state, result);
   state.aiInProgress = false;
   state.lastAiCallAt = receivedAt;
   appendJsonl(AI_LOG_FILE, { ts: receivedAt, payload: userPayload, result });
@@ -2851,6 +2937,24 @@ function normalizeChatAction(action = {}, state = {}, now = Date.now(), index = 
         validationError: "task_not_in_current_scan",
       },
       reason,
+      source: "ai_chat",
+      status: "invalid",
+      createdAt: now,
+      expiresAt: now,
+    };
+  }
+  const pauseGuardReason = boostPauseGuardReason(state, {
+    type,
+    taskId: taskId || matchedTaskId,
+    taskName: taskName || matchedTask.name,
+  });
+  if (pauseGuardReason) {
+    return {
+      id: `${now}-ai-chat-${index}-${type}-guarded`,
+      type,
+      title: "AI 对话建议不满足追投关闭条件",
+      payload: { taskId: taskId || matchedTaskId || undefined, taskName: taskName || matchedTask.name || undefined, validationError: "boost_pause_threshold_not_met" },
+      reason: pauseGuardReason,
       source: "ai_chat",
       status: "invalid",
       createdAt: now,
@@ -3448,13 +3552,24 @@ async function executeApprovedAction(id, options = {}) {
     writeJson(STATE_FILE, state);
     return { ok: false, error: "action_expired" };
   }
+  const failPreflight = (error) => {
+    action.status = "failed";
+    action.executedAt = Date.now();
+    action.execution = { ok: false, error, preflight: true };
+    state.lastActionAt = state.lastActionAt || {};
+    delete state.lastActionAt[actionKey(action.type, action.payload || {})];
+    state.updatedAt = new Date().toISOString();
+    writeJson(STATE_FILE, state);
+    appendJsonl(LOG_FILE, { id: `${Date.now()}-action-preflight-failed`, receivedAt: Date.now(), type: "action_execution", actionId: id, error, preflight: true });
+    return { ok: false, error, action };
+  };
   const createAction = isCreateActionType(action.type);
   if (!createAction && !action.payload?.taskId) {
-    return { ok: false, error: "missing_task_id" };
+    return failPreflight("missing_task_id");
   }
   const taskExists = createAction || (state.metrics?.tasks || []).some((task) => String(task.taskId || task.id || "") === String(action.payload.taskId));
   if (!taskExists) {
-    return { ok: false, error: "task_not_in_current_scan" };
+    return failPreflight("task_not_in_current_scan");
   }
   if (!createAction) {
     const currentTask = taskForAction(state, action);
@@ -3516,15 +3631,6 @@ async function executeApprovedAction(id, options = {}) {
     }
     latest.updatedAt = new Date().toISOString();
     writeJson(STATE_FILE, latest);
-    if (result.ok && !result.dryRun && executionsLastHour(latest) === 1 && latest.config.actionMode !== "armed") {
-      latest.config = migrateConfig(latest.config);
-      latest.config.executorDryRun = true;
-      writeJson(STATE_FILE, latest);
-      writeWarning("dryryn_auto_restored", {
-        reason: "first_real_execute_succeeded",
-        actionId: id,
-      });
-    }
     appendJsonl(LOG_FILE, { id: `${Date.now()}-action-execution`, receivedAt: Date.now(), type: "action_execution", actionId: id, result });
     notifyActionExecutionResult(latest, latestAction || action, { ok: result.ok, execution: result });
     return { ok: result.ok, action: latestAction, execution: result };
@@ -3609,8 +3715,10 @@ function createManualActionCommand(body = {}) {
   const payRoi = Number(body.payRoi);
   const bidPrice = Number(body.bidPrice);
   const materialId = String(body.materialId || "").trim();
+  const materialIds = materialIdsFromPayload(body.materialIds, materialId);
   const boostType = String(body.boostType || body.type || "").trim();
   const useLiveRoomImage = body.useLiveRoomImage !== false;
+  const manualBoostOverride = body.manualBoostOverride === true;
   if (!command && !actionType) return { ok: false, error: "command_required" };
 
   const inferredType = actionType || (command.includes("新建") && command.includes("一键") ? "create_oneclick_task" : command.includes("新建") || command.includes("追投") ? "create_boost_task" : command.includes("结束") ? "end_task" : command.includes("暂停") ? "pause_task" : command.includes("ROI") || command.includes("roi") ? "change_roi_target" : command.includes("时长") ? "extend_task_duration" : command.includes("降") ? "decrease_task_budget" : "increase_task_budget");
@@ -3622,8 +3730,11 @@ function createManualActionCommand(body = {}) {
   const payloadTaskId = taskId || taskIdFromPayload({ taskName, command }) || "";
   const task = (state.metrics?.tasks || []).find((item) => String(item.taskId || item.id || "") === String(payloadTaskId)
     || String(item.name || "").includes(payloadTaskId)
-    || (taskName && item.name === taskName)) || {};
-  const currentBudget = num(task.budget);
+    || (taskName && item.name === taskName));
+  if (!isCreateActionType(type) && !task) {
+    return { ok: false, error: "task_not_in_current_scan", detail: { taskId: payloadTaskId || undefined } };
+  }
+  const currentBudget = num(task?.budget);
   const commandUsesTargetBudget = /加到|调到|改到|预算到|新预算|设为|设置为|调整到/.test(command);
   let nextBudget = Number.isFinite(budget) && budget > 0 ? budget : undefined;
   let increaseAmount = Number.isFinite(budgetIncrease) && budgetIncrease > 0 ? budgetIncrease : undefined;
@@ -3642,9 +3753,10 @@ function createManualActionCommand(body = {}) {
   const payload = {
     taskId: payloadTaskId || undefined,
     taskName: taskName || undefined,
-    taskType: task.taskType || task.type || undefined,
+    taskType: task?.taskType || task?.type || undefined,
     command,
-    materialId: materialId || undefined,
+    materialId: materialIds[0] || undefined,
+    materialIds: materialIds.length ? materialIds : undefined,
     boostType: boostType || undefined,
     budget: Number.isFinite(nextBudget) ? nextBudget : undefined,
     budgetIncrease: Number.isFinite(increaseAmount) ? increaseAmount : undefined,
@@ -3653,12 +3765,13 @@ function createManualActionCommand(body = {}) {
     payRoi: Number.isFinite(payRoi) && payRoi > 0 ? payRoi : undefined,
     bidPrice: Number.isFinite(bidPrice) && bidPrice > 0 ? bidPrice : undefined,
     useLiveRoomImage,
+    manualBoostOverride: manualBoostOverride || undefined,
     requiresExecutor: true,
   };
   if (!isCreateActionType(type) && !payload.taskId) return { ok: false, error: "task_id_required" };
   if (type === "change_roi_target" && !payload.targetRoi) return { ok: false, error: "target_roi_required" };
   if (type === "extend_task_duration" && !payload.durationHours) return { ok: false, error: "duration_required" };
-  if (type === "create_boost_task" && !payload.materialId && !payload.useLiveRoomImage) return { ok: false, error: "material_id_required" };
+  if (type === "create_boost_task" && !payload.materialIds?.length && !payload.useLiveRoomImage) return { ok: false, error: "material_id_required" };
   if (isCreateActionType(type) && !payload.budget) return { ok: false, error: "budget_required" };
   const titleByType = {
     increase_task_budget: "人工加预算",
@@ -3670,7 +3783,12 @@ function createManualActionCommand(body = {}) {
     create_oneclick_task: "人工新建一键起量",
   };
   const title = titleByType[type] || "人工输入调控动作";
-  const reason = `用户输入动作：${command || title}。当前仅生成待审批动作，真正点击千川页面前仍需要执行器护栏校验。${isCreateActionType(type) ? "新建类动作会先 dryRun 截图验证，再二次确认真点。" : ""}`;
+  const boostRatio = currentBoostRatioValue(state);
+  const manualBoostOverrideAllowed = type === "create_boost_task" && manualBoostOverride;
+  const manualBoostRisk = manualBoostOverrideAllowed && Number.isFinite(boostRatio) && boostRatio >= 28
+    ? `当前追投占比 ${boostRatio}% 已达安全线，本次为人工主动创建，已保留风险提示。`
+    : "";
+  const reason = `用户输入动作：${command || title}。${manualBoostRisk}当前仅生成待审批动作，真正点击千川页面前仍需要执行器护栏校验。${isCreateActionType(type) ? "新建类动作会先 dryRun 截图验证，再二次确认真点。" : ""}`;
   const duplicate = findPendingDuplicateAction(state, type, payload, receivedAt);
   if (duplicate) {
     duplicate.reason = duplicate.reason || reason;
@@ -3686,7 +3804,9 @@ function createManualActionCommand(body = {}) {
     actionCooldownMs: 0,
     maxActionsPerHour: Math.max(originalConfig.maxActionsPerHour || 3, activeActionCount(state, receivedAt) + 1),
   };
-  const action = pushAction(state, type, title, payload, reason, receivedAt, "manual");
+  const action = pushAction(state, type, title, payload, reason, receivedAt, "manual", {
+    allowManualBoostOverride: manualBoostOverrideAllowed,
+  });
   state.config = originalConfig;
   if (!action) return { ok: false, error: state.lastCreateActionReject?.reason || "action_dedup_or_throttled", detail: state.lastCreateActionReject || undefined };
   state.updatedAt = new Date().toISOString();
@@ -3695,8 +3815,23 @@ function createManualActionCommand(body = {}) {
   return { ok: true, action };
 }
 
-function materialScreenCandidate(item = {}, recommendation = {}) {
+function materialBoostStatus(state = {}, item = {}) {
+  const materialId = String(item.materialId || item["素材ID"] || "");
+  const taskIds = (state.metrics?.tasks || [])
+    .filter((task) => ["materialBoost", "materialCostControl"].includes(String(task.taskType || "")))
+    .filter((task) => /调控中|进行中|投放中/.test(String(task.status || task.material?.status || "")))
+    .filter((task) => (task.materialIds || task.material?.materialIds || []).map(String).includes(materialId))
+    .map((task) => String(task.taskId || task.id || ""))
+    .filter(Boolean);
+  if (taskIds.length) return { label: "追投中", source: "task_center", taskIds };
+  const collected = String(item.boostStatus || item["追投状态"] || "");
+  if (collected === "追投中" || collected === "未追投") return { label: collected, source: "material_table", taskIds: [] };
+  return { label: "未识别", source: "unresolved", taskIds: [] };
+}
+
+function materialScreenCandidate(item = {}, recommendation = {}, state = {}) {
   const materialId = String(item.materialId || item["素材ID"] || recommendation.materialId || "");
+  const boost = materialBoostStatus(state, item);
   return {
     name: item.name || item.materialName || item["素材名称"] || materialId,
     materialId,
@@ -3704,6 +3839,9 @@ function materialScreenCandidate(item = {}, recommendation = {}) {
     roi: num(item.materialRoi ?? item["素材ROI"]),
     ctr: num(item.ctr ?? item.CTR),
     cvr: num(item.cvr ?? item.CVR),
+    boostStatus: boost.label,
+    boostTaskIds: boost.taskIds,
+    boostStatusSource: boost.source,
     auditStatus: item.auditStatus || item["审核状态"] || "",
     materialType: item.materialType || item["类型"] || "",
     budget: Number(recommendation.budget) || 150,
@@ -3716,7 +3854,9 @@ async function screenMaterialRecommendations(body = {}) {
   const state = readJson(STATE_FILE, {});
   state.config = migrateConfig(state.config);
   const boostRatio = currentBoostRatioValue(state);
-  if (Number.isFinite(boostRatio) && boostRatio >= 28) {
+  const manualBoostOverride = body.manualBoostOverride === true;
+  const boostRisk = Number.isFinite(boostRatio) && boostRatio >= 28;
+  if (boostRisk && !manualBoostOverride) {
     return { ok: true, candidates: [], boostRatio, blocked: true, message: "追投占比已达28%，禁止新建追投" };
   }
   const screened = await screenMaterials(String(body.type || ""), body.manualIds, {
@@ -3724,7 +3864,7 @@ async function screenMaterialRecommendations(body = {}) {
     accountId: state.config.expectedAccountId,
   });
   if (!screened.ok) return { ok: false, error: screened.error, paused: screened.paused, candidates: [] };
-  const source = (screened.materials || []).slice(0, 5);
+  const source = (screened.materials || []).slice(0, 10);
   const payload = {
     current: {
       overallRoi: num(state.metrics?.overallRoi),
@@ -3733,24 +3873,26 @@ async function screenMaterialRecommendations(body = {}) {
       onlineCount: num(state.metrics?.onlineCount),
       targetRoi: num(state.config?.targetRoi),
     },
-    sop: state.config?.investmentSop?.autonomousBoostRules || "追投占比达到28%禁止新建；审核未通过和素材ROI低于2不推荐。",
-    materials: source.map((item) => materialScreenCandidate(item)),
+    sop: state.config?.investmentSop?.autonomousBoostRules || "审核未通过和素材ROI低于2的素材不推荐。",
+    manualBoostOverride,
+    materials: source.map((item) => materialScreenCandidate(item, {}, state)),
   };
   const ai = await deepseek.decide({
     config: state.config,
-    systemPrompt: "你是素材追投推荐助手。只返回严格 JSON：decision=act，actions 最多3条；每条 actions[].params 必须含 materialId、budget、durationHours，actions[].reason 不超过50字。仅从用户给出的素材中选择，审核未通过或素材ROI小于2的素材不能推荐。",
+    systemPrompt: "你是素材追投推荐助手。只返回严格 JSON：decision=act，actions 最多3条；每条 actions[].params 必须含 materialId、budget、durationHours，actions[].reason 不超过50字。仅从用户给出的素材中选择，审核未通过或素材ROI小于2的素材不能推荐。若 manualBoostOverride=true，用户正在主动创建追投；追投占比只作为风险提示，不能据此拒绝筛选。",
     userPayload: payload,
   });
-  const byId = new Map(source.map((item) => [String(item.materialId || item["素材ID"]), item]));
-  const candidates = (ai.actions || [])
-    .map((action) => materialScreenCandidate(byId.get(String(action.params?.materialId || "")) || {}, { ...action.params, reason: action.reason }))
-    .filter((item) => item.materialId)
-    .slice(0, 3);
+  const recommendations = new Map((ai.actions || [])
+    .map((action) => [String(action.params?.materialId || ""), { ...action.params, reason: action.reason }])
+    .filter(([materialId]) => materialId));
+  const candidates = source.map((item) => materialScreenCandidate(item, recommendations.get(String(item.materialId || item["素材ID"])) || {}, state));
   return {
     ok: true,
-    candidates: candidates.length ? candidates : source.slice(0, 3).map((item) => materialScreenCandidate(item)),
+    candidates: candidates.length ? candidates : source.slice(0, 3).map((item) => materialScreenCandidate(item, {}, state)),
     boostRatio,
     blocked: false,
+    manualBoostOverride,
+    warning: boostRisk ? `当前追投占比 ${boostRatio}% 已达安全线；本次为人工主动创建，仍请核对风险后预览。` : "",
     warnings: screened.warnings || [],
     aiError: ai.error || "",
   };
@@ -4981,6 +5123,7 @@ async function runTaskCollectForState(options = {}) {
   taskCollectRunning = true;
   const state = readJson(STATE_FILE, {});
   state.config = migrateConfig(state.config);
+  const previousTasks = Array.isArray(state.operationLearning?.lastTasks) ? state.operationLearning.lastTasks : [];
   taskCollectPromise = runTaskCollector({
     stateFile: STATE_FILE,
     logFile: LOG_FILE,
@@ -4990,7 +5133,34 @@ async function runTaskCollectForState(options = {}) {
   }).then((result) => {
     const latest = readJson(STATE_FILE, state);
     latest.config = migrateConfig(latest.config);
+    if (result.ok) {
+      const observedAt = result.finishedAt || Date.now();
+      const currentTasks = Array.isArray(latest.metrics?.tasks) ? latest.metrics.tasks : [];
+      const operations = detectManualOperations(previousTasks, currentTasks, {
+        observedAt,
+        overallRoi: latest.metrics?.overallRoi,
+        boostRatio: latest.metrics?.boostRatio,
+        onlineCount: latest.metrics?.onlineCount,
+        targetRoi: latest.config?.targetRoi,
+      });
+      const priorOperations = Array.isArray(latest.operationLearning?.recentOperations) ? latest.operationLearning.recentOperations : [];
+      latest.operationLearning = {
+        version: 1,
+        initializedAt: latest.operationLearning?.initializedAt || observedAt,
+        lastComparedAt: observedAt,
+        lastTasks: snapshotTasks(currentTasks),
+        recentOperations: [...priorOperations, ...operations].slice(-50),
+      };
+      operations.forEach((operation, index) => appendJsonl(LOG_FILE, {
+        id: `${observedAt}-user-operation-${index}`,
+        receivedAt: observedAt,
+        type: "user_manual_operation",
+        operation,
+      }));
+    }
     trackCollectorDingTalkOutcome(latest, "task_collect", "调控任务", result.ok || result.skipped, result.error || result.status);
+    latest.updatedAt = new Date().toISOString();
+    writeJson(STATE_FILE, latest);
     return result;
   }).catch((error) => {
     const latest = readJson(STATE_FILE, state);
@@ -5330,7 +5500,8 @@ async function route(req, res) {
     state.config = migrateConfig(state.config);
     const boostType = String(body.type || "");
     const boostRatio = currentBoostRatioValue(state);
-    if (boostType !== "oneClickLift" && Number.isFinite(boostRatio) && boostRatio >= 28) {
+    const manualBoostOverride = body.manualBoostOverride === true;
+    if (boostType !== "oneClickLift" && !manualBoostOverride && Number.isFinite(boostRatio) && boostRatio >= 28) {
       return send(res, 400, { ok: false, blocked: true, boostRatio, error: "boost_ratio_guard", message: "追投占比已达28%，禁止新建追投" });
     }
     const result = await previewTask(body, {

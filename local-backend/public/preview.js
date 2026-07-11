@@ -356,6 +356,10 @@ function friendlyError(error) {
     hourly_execute_limit_reached: "最近 1 小时执行次数已达上限。",
     missing_task_id: "动作缺少任务 ID，不能执行。",
     action_not_found: "动作不存在，可能页面数据已刷新。",
+    budget_input_not_found: "已打开千川编辑弹窗，但未找到预算输入框。请保留该弹窗并重新采集后再试。",
+    duration_input_not_found: "已打开千川编辑弹窗，但未找到时长输入框。请保留该弹窗并重新采集后再试。",
+    roi_input_not_found: "已打开千川编辑弹窗，但未找到 ROI 输入框。请保留该弹窗并重新采集后再试。",
+    action_target_not_found_or_not_clickable: "执行器未能定位任务行或对应操作按钮。请先重新采集任务后再试。",
     confirm_dialog_not_visible: "千川确认弹窗没有识别到，请确认任务按钮可见后重试。",
     task_row_not_found: "执行器没有在当前千川页面找到对应任务行，请先打开对应任务页并重新采集。",
   };
@@ -1700,13 +1704,24 @@ async function reviewAction(id, type) {
   const action = (latestState?.actions || []).find((item) => item.id === id) || null;
   const reason = type === "reject" ? askRejectReason(action) : "";
   if (reason === null) return;
-  await fetch(`/api/action/${type}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, reason }) });
-  await refresh();
+  try {
+    const result = await postJson(`/api/action/${type}`, { id, reason });
+    if (type === "approve" && result.executionResult?.ok === false) throw new Error(result.executionResult.error || "execute_failed");
+    await refresh();
+  } catch (error) {
+    $("systemError").hidden = false;
+    $("systemError").textContent = `执行失败：${friendlyError(error)}`;
+  }
 }
 
 async function executeAction(id, options = {}) {
-  await postJson("/api/action/execute", { id, forceReal: options.forceReal === true });
-  await refresh();
+  try {
+    await postJson("/api/action/execute", { id, forceReal: options.forceReal === true });
+    await refresh();
+  } catch (error) {
+    $("systemError").hidden = false;
+    $("systemError").textContent = `执行失败：${friendlyError(error)}`;
+  }
 }
 
 function chatActionParams(action = {}) {
@@ -2161,11 +2176,15 @@ async function submitTaskActionDialog(event) {
     payload.budgetIncrease = payload.budget;
     delete payload.budget;
   }
-  const result = await postJson("/api/action/command", payload);
-  $("taskActionDialog").close();
-  pendingTaskAction = null;
-  if (result.action) showActionConfirmDialog([result.action], result.action.reason || "已生成待确认动作，点同意后系统会立即执行。");
-  await refresh();
+  try {
+    const result = await postJson("/api/action/command", payload);
+    $("taskActionDialog").close();
+    pendingTaskAction = null;
+    if (result.action) showActionConfirmDialog([result.action], result.action.reason || "已生成待确认动作，点同意后系统会立即执行。");
+    await refresh();
+  } catch (error) {
+    $("taskActionHint").textContent = `无法生成动作：${friendlyError(error)}`;
+  }
 }
 
 $("triggerAiNow").addEventListener("click", async () => {
@@ -2286,23 +2305,44 @@ document.addEventListener("click", async (event) => {
   if (!taskId) return;
   openTaskActionDialog(action, { taskId, taskName: button.dataset.taskName || "" });
 });
-let createTaskDraft = { type: "", candidate: null, preview: null, candidates: [] };
+let createTaskDraft = { type: "", candidate: null, preview: null, candidates: [], selectedMaterialIds: [] };
 const createTaskTypeLabel = (type) => ({ materialBoost: "素材放量追投", materialCostControlPayRoi: "控成本·支付ROI", materialCostControlBid: "控成本·直播出价", oneClickLift: "一键起量·直播间购买", liveScreenBoost: "直播间画面追投" }[type] || "新建追投");
 const createTaskSkipsMaterial = (type) => ["oneClickLift", "liveScreenBoost"].includes(type);
 function openCreateTaskModal(presetType = "") {
-  createTaskDraft = { type: "", candidate: null, preview: null, candidates: [] };
+  createTaskDraft = { type: "", candidate: null, preview: null, candidates: [], selectedMaterialIds: [] };
   ["createTaskStepMaterial", "createTaskStepParams", "createTaskStepPreview"].forEach((id) => { $(id).hidden = true; });
-  $("createTaskCandidates").innerHTML = ""; $("createTaskScreenStatus").textContent = "";
+  $("createTaskCandidates").innerHTML = ""; $("createTaskScreenStatus").textContent = ""; $("createTaskBatch").hidden = true;
   document.querySelectorAll("[data-create-type]").forEach((item) => item.classList.remove("selected"));
   $("createTaskModal").showModal();
   if (presetType) selectCreateTaskType(presetType);
 }
+function selectedCreateMaterialIds() {
+  const available = new Set(createTaskDraft.candidates.map((item) => String(item.materialId || "")));
+  return Array.from(new Set(createTaskDraft.selectedMaterialIds || [])).filter((id) => available.has(id)).slice(0, 10);
+}
+function selectedCreateCandidates() {
+  const selected = new Set(selectedCreateMaterialIds());
+  return createTaskDraft.candidates.filter((item) => selected.has(String(item.materialId || "")));
+}
+function renderCreateTaskBatch() {
+  const total = createTaskDraft.candidates.length;
+  const selected = selectedCreateMaterialIds();
+  $("createTaskBatch").hidden = total === 0;
+  $("createTaskSelectionCount").textContent = `已选 ${selected.length} / ${total} 条`;
+  $("createTaskSelectAll").disabled = total === 0 || selected.length === total;
+  $("createTaskClearAll").disabled = selected.length === 0;
+  $("createTaskUseSelected").disabled = selected.length === 0;
+}
 function renderCreateCandidates(items = []) {
   createTaskDraft.candidates = items;
-  $("createTaskCandidates").innerHTML = items.map((item, index) => `<article class="create-task-candidate ${createTaskDraft.candidate?.materialId === item.materialId ? "selected" : ""}"><div><strong>${escapeHtml(item.name || item.materialId)}</strong><span>ID: ${escapeHtml(item.materialId)}</span><span>ROI ${money(item.roi)} · 消耗 ${money(item.spend)} · CTR ${ratio(item.ctr)}% · CVR ${ratio(item.cvr)}%</span><p>${escapeHtml(item.reason || "")}</p></div><button type="button" data-create-candidate="${index}">选这个</button></article>`).join("") || "<p class=\"manual-action-result\">未找到可用素材。</p>";
+  createTaskDraft.selectedMaterialIds = selectedCreateMaterialIds();
+  const selected = new Set(createTaskDraft.selectedMaterialIds);
+  $("createTaskCandidates").innerHTML = items.map((item, index) => { const boostStatus = item.boostStatus || "未识别"; const tone = boostStatus === "追投中" ? "live" : boostStatus === "未追投" ? "idle" : "unknown"; return `<article class="create-task-candidate ${selected.has(String(item.materialId)) ? "selected" : ""}"><div><strong>${escapeHtml(item.name || item.materialId)}</strong><span>ID: ${escapeHtml(item.materialId)}</span><span>ROI ${money(item.roi)} · 消耗 ${money(item.spend)} · CTR ${ratio(item.ctr)}% · CVR ${ratio(item.cvr)}%</span><span class="create-task-boost-status ${tone}">追投状态：${escapeHtml(boostStatus)}</span><p>${escapeHtml(item.reason || "")}</p></div><label class="create-task-select"><input type="checkbox" data-create-candidate="${index}" ${selected.has(String(item.materialId)) ? "checked" : ""} />选择</label></article>`; }).join("") || "<p class=\"manual-action-result\">未找到可用素材。</p>";
+  renderCreateTaskBatch();
 }
 function showCreateTaskParams() {
   const type = createTaskDraft.type;
+  createTaskDraft.candidate = selectedCreateCandidates()[0] || null;
   $("createTaskStepParams").hidden = false;
   $("createTaskPayRoiField").hidden = type !== "materialCostControlPayRoi";
   $("createTaskBidField").hidden = type !== "materialCostControlBid";
@@ -2314,14 +2354,16 @@ function showCreateTaskParams() {
 async function screenCreateMaterials(type, manualIds) {
   $("createTaskScreenStatus").textContent = "分析中...";
   try {
-    const result = await postJson("/api/material/screen", { type, manualIds });
-    if (result.blocked) { $("createTaskScreenStatus").textContent = "追投占比已达28%，禁止新建追投"; $("createTaskCandidates").innerHTML = ""; return; }
-    $("createTaskScreenStatus").textContent = result.aiError ? "已按筛选结果给出建议。" : "已生成推荐素材。";
+    const result = await postJson("/api/material/screen", { type, manualIds, manualBoostOverride: true });
+    if (result.blocked) { $("createTaskScreenStatus").textContent = result.message || "素材筛选暂不可用"; $("createTaskCandidates").innerHTML = ""; return; }
+    const status = result.aiError ? "已按筛选结果给出建议。" : "已生成推荐素材。";
+    $("createTaskScreenStatus").textContent = result.warning ? `${status} ${result.warning}` : status;
+    createTaskDraft.selectedMaterialIds = [];
     renderCreateCandidates(result.candidates || []);
   } catch (error) { $("createTaskScreenStatus").textContent = `筛选失败：${friendlyError(error)}`; }
 }
 function selectCreateTaskType(type) {
-  createTaskDraft.type = type; createTaskDraft.candidate = null;
+  createTaskDraft.type = type; createTaskDraft.candidate = null; createTaskDraft.selectedMaterialIds = [];
   document.querySelectorAll("[data-create-type]").forEach((item) => item.classList.toggle("selected", item.dataset.createType === type));
   if (createTaskSkipsMaterial(type)) { $("createTaskStepMaterial").hidden = true; showCreateTaskParams(); }
   else { $("createTaskStepMaterial").hidden = false; $("createTaskStepParams").hidden = true; }
@@ -2329,17 +2371,20 @@ function selectCreateTaskType(type) {
 document.querySelectorAll("[data-create-type]").forEach((button) => button.addEventListener("click", () => selectCreateTaskType(button.dataset.createType)));
 document.querySelectorAll("[data-material-screen]").forEach((button) => button.addEventListener("click", () => screenCreateMaterials(button.dataset.materialScreen)));
 $("createTaskManualScreen")?.addEventListener("click", () => screenCreateMaterials("manual", $("createTaskManualIds").value.split(",").map((id) => id.trim()).filter(Boolean)));
-$("createTaskCandidates")?.addEventListener("click", (event) => { const button = event.target.closest("[data-create-candidate]"); if (!button) return; createTaskDraft.candidate = createTaskDraft.candidates[Number(button.dataset.createCandidate)] || null; renderCreateCandidates(createTaskDraft.candidates); showCreateTaskParams(); });
+$("createTaskCandidates")?.addEventListener("change", (event) => { const input = event.target.closest("input[data-create-candidate]"); if (!input) return; const candidate = createTaskDraft.candidates[Number(input.dataset.createCandidate)]; if (!candidate) return; const id = String(candidate.materialId || ""); const selected = new Set(selectedCreateMaterialIds()); if (input.checked) selected.add(id); else selected.delete(id); createTaskDraft.selectedMaterialIds = Array.from(selected).slice(0, 10); renderCreateCandidates(createTaskDraft.candidates); });
+$("createTaskSelectAll")?.addEventListener("click", () => { createTaskDraft.selectedMaterialIds = createTaskDraft.candidates.map((item) => String(item.materialId || "")).filter(Boolean).slice(0, 10); renderCreateCandidates(createTaskDraft.candidates); });
+$("createTaskClearAll")?.addEventListener("click", () => { createTaskDraft.selectedMaterialIds = []; renderCreateCandidates(createTaskDraft.candidates); });
+$("createTaskUseSelected")?.addEventListener("click", () => { if (selectedCreateMaterialIds().length) showCreateTaskParams(); });
 $("createTaskPreview")?.addEventListener("click", async () => {
-  const type = createTaskDraft.type; if (!type || (!createTaskSkipsMaterial(type) && !createTaskDraft.candidate)) return;
+  const type = createTaskDraft.type; const materialIds = selectedCreateMaterialIds(); if (!type || (!createTaskSkipsMaterial(type) && !materialIds.length)) return;
   const button = $("createTaskPreview"); button.disabled = true; button.textContent = "预览中...";
-  const payload = { type, materialId: createTaskDraft.candidate?.materialId, budget: Number($("createTaskBudget").value), durationHours: Number($("createTaskDuration").value), targetRoi: Number($("createTaskRoi").value), payRoi: Number($("createTaskPayRoi").value), bidPrice: Number($("createTaskBid").value), useLiveRoomImage: createTaskSkipsMaterial(type) };
-  try { const result = await postJson("/api/task/preview", payload); createTaskDraft.preview = { ...result, payload }; $("createTaskPreviewImage").src = result.screenshotPath; $("createTaskPreviewSummary").textContent = `${createTaskTypeLabel(type)}｜${result.formSummary.materialId}｜预算 ${result.formSummary.budget} 元｜${result.formSummary.durationHours} 小时`; $("createTaskStepPreview").hidden = false; } catch (error) { $("createTaskScreenStatus").textContent = `预览失败：${friendlyError(error)}`; } finally { button.disabled = false; button.textContent = "预览"; }
+  const payload = { type, materialId: materialIds[0], materialIds, budget: Number($("createTaskBudget").value), durationHours: Number($("createTaskDuration").value), targetRoi: Number($("createTaskRoi").value), payRoi: Number($("createTaskPayRoi").value), bidPrice: Number($("createTaskBid").value), useLiveRoomImage: createTaskSkipsMaterial(type), manualBoostOverride: type !== "oneClickLift" };
+  try { const result = await postJson("/api/task/preview", payload); createTaskDraft.preview = { ...result, payload }; const materialText = createTaskSkipsMaterial(type) ? result.formSummary.materialId : `已选 ${result.formSummary.materialIds?.length || 1} 条素材`; $("createTaskPreviewImage").src = result.screenshotPath; $("createTaskPreviewSummary").textContent = `${createTaskTypeLabel(type)}｜${materialText}｜预算 ${result.formSummary.budget} 元｜${result.formSummary.durationHours} 小时`; $("createTaskStepPreview").hidden = false; } catch (error) { $("createTaskScreenStatus").textContent = `预览失败：${friendlyError(error)}`; } finally { button.disabled = false; button.textContent = "预览"; }
 });
 $("createTaskBack")?.addEventListener("click", () => { $("createTaskStepPreview").hidden = true; });
 $("createTaskConfirm")?.addEventListener("click", async () => {
   const preview = createTaskDraft.preview; if (!preview) return; const payload = preview.payload;
-  const result = await postJson("/api/action/command", { actionType: payload.type === "oneClickLift" ? "create_oneclick_task" : "create_boost_task", materialId: payload.materialId, budget: payload.budget, durationHours: payload.durationHours, targetRoi: payload.targetRoi, payRoi: payload.payRoi, bidPrice: payload.bidPrice, boostType: payload.type === "liveScreenBoost" ? "liveScreenBoost" : payload.type.startsWith("materialCostControl") ? "materialCostControl" : "materialBoost", useLiveRoomImage: payload.useLiveRoomImage, command: `${createTaskTypeLabel(payload.type)}（已预览）` });
+  const result = await postJson("/api/action/command", { actionType: payload.type === "oneClickLift" ? "create_oneclick_task" : "create_boost_task", materialId: payload.materialId, materialIds: payload.materialIds, budget: payload.budget, durationHours: payload.durationHours, targetRoi: payload.targetRoi, payRoi: payload.payRoi, bidPrice: payload.bidPrice, boostType: payload.type === "liveScreenBoost" ? "liveScreenBoost" : payload.type.startsWith("materialCostControl") ? "materialCostControl" : "materialBoost", useLiveRoomImage: payload.useLiveRoomImage, manualBoostOverride: payload.manualBoostOverride, command: `${createTaskTypeLabel(payload.type)}（已预览）` });
   $("createTaskModal").close(); if (result.action) showActionConfirmDialog([result.action], "表单预览已完成。确认后将先进行 dryRun，再由你进行第二次真实执行确认。"); await refresh();
 });
 $("createTaskClose")?.addEventListener("click", () => $("createTaskModal").close());
