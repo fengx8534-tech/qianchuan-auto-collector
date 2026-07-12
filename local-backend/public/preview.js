@@ -2311,9 +2311,9 @@ document.addEventListener("click", async (event) => {
   openTaskActionDialog(action, { taskId, taskName: button.dataset.taskName || "" });
 });
 let createTaskDraft = { type: "", candidate: null, preview: null, candidates: [], selectedMaterialIds: [] };
-const createTaskTypeLabel = (type) => ({ materialBoost: "素材放量追投", materialCostControlPayRoi: "控成本·支付ROI", materialCostControlBid: "控成本·直播出价", oneClickLift: "一键起量·直播间购买", liveScreenBoost: "直播间画面追投" }[type] || "新建追投");
-const createTaskSkipsMaterial = (type) => ["oneClickLift", "liveScreenBoost"].includes(type);
-const createTaskUsesGenericRoi = (type) => !["materialBoost", "oneClickLift"].includes(type);
+const createTaskTypeLabel = (type) => ({ materialBoost: "素材放量追投", materialCostControlPayRoi: "控成本·支付ROI", materialCostControlBid: "控成本·直播出价", oneClickLift: "一键起量·直播间购买", liveScreenBoost: "画面追投·放量", liveScreenCostControl: "画面追投·控成本" }[type] || "新建追投");
+const createTaskSkipsMaterial = (type) => ["oneClickLift", "liveScreenBoost", "liveScreenCostControl"].includes(type);
+const createTaskUsesGenericRoi = (type) => !["materialBoost", "oneClickLift", "liveScreenBoost"].includes(type);
 function setCreateTaskPreviewStatus(text = "") {
   $("createTaskScreenStatus").textContent = text;
   $("createTaskPreviewStatus").textContent = text;
@@ -2358,7 +2358,8 @@ function showCreateTaskParams() {
   $("createTaskBidField").hidden = type !== "materialCostControlBid";
   $("createTaskRoiField").hidden = !createTaskUsesGenericRoi(type);
   if (type === "oneClickLift") { $("createTaskBudget").value = 200; $("createTaskDuration").value = 1; return; }
-  if (type === "liveScreenBoost") { $("createTaskBudget").value = 100; $("createTaskDuration").value = 1; $("createTaskRoi").value = 6; return; }
+  if (type === "liveScreenBoost") { $("createTaskBudget").value = 100; $("createTaskDuration").value = 1; return; }
+  if (type === "liveScreenCostControl") { $("createTaskBudget").value = 100; $("createTaskDuration").value = 1; $("createTaskRoi").value = 6; return; }
   if (type === "materialBoost") { $("createTaskBudget").value = 200; $("createTaskDuration").value = 1; return; }
   if (createTaskDraft.candidate) { $("createTaskBudget").value = createTaskDraft.candidate.budget || 200; $("createTaskDuration").value = createTaskDraft.candidate.durationHours || 1; }
 }
@@ -2406,7 +2407,7 @@ $("createTaskPreview")?.addEventListener("click", async () => {
 $("createTaskBack")?.addEventListener("click", () => { $("createTaskStepPreview").hidden = true; });
 $("createTaskConfirm")?.addEventListener("click", async () => {
   const preview = createTaskDraft.preview; if (!preview) return; const payload = preview.payload;
-  const result = await postJson("/api/action/command", { actionType: payload.type === "oneClickLift" ? "create_oneclick_task" : "create_boost_task", materialId: payload.materialId, materialIds: payload.materialIds, budget: payload.budget, durationHours: payload.durationHours, targetRoi: payload.targetRoi, payRoi: payload.payRoi, bidPrice: payload.bidPrice, boostType: payload.type === "liveScreenBoost" ? "liveScreenBoost" : payload.type.startsWith("materialCostControl") ? "materialCostControl" : "materialBoost", useLiveRoomImage: payload.useLiveRoomImage, manualBoostOverride: payload.manualBoostOverride, command: `${createTaskTypeLabel(payload.type)}（已预览）` });
+  const result = await postJson("/api/action/command", { actionType: payload.type === "oneClickLift" ? "create_oneclick_task" : "create_boost_task", materialId: payload.materialId, materialIds: payload.materialIds, budget: payload.budget, durationHours: payload.durationHours, targetRoi: payload.targetRoi, payRoi: payload.payRoi, bidPrice: payload.bidPrice, boostType: payload.type === "liveScreenBoost" ? "liveScreenBoost" : payload.type === "liveScreenCostControl" ? "liveScreenCostControl" : payload.type.startsWith("materialCostControl") ? "materialCostControl" : "materialBoost", useLiveRoomImage: payload.useLiveRoomImage, manualBoostOverride: payload.manualBoostOverride, command: `${createTaskTypeLabel(payload.type)}（已预览）` });
   $("createTaskModal").close(); if (result.action) showActionConfirmDialog([result.action], "表单预览已完成。确认后将先进行 dryRun，再由你进行第二次真实执行确认。"); await refresh();
 });
 $("createTaskClose")?.addEventListener("click", () => $("createTaskModal").close());
