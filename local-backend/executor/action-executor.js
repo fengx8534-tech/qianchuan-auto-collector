@@ -531,6 +531,30 @@ function buildCreateTaskExpression(action, dryRun) {
       node.click();
       return { ok: true, step, text: textOf(node).slice(0, 80) };
     };
+    const clickExactByText = async (values, step, root = document) => {
+      const node = visible("button, [role=button], a", root).find((item) => values.includes(textOf(item)));
+      if (!node) return { ok: false, step, error: "target_not_found", values, url: location.href, title: document.title };
+      node.scrollIntoView({ block: "center", inline: "center" });
+      await wait(120);
+      node.click();
+      return { ok: true, step, text: textOf(node) };
+    };
+    const exactText = (node) => textOf(node).replace(/\\s+/g, " ");
+    const candidateRowsForMaterial = (materialId) => Array.from(new Set(visible("tr, [role=row], [class*='table-row'], [class*='TableRow'], [class*='row'], [class*='item'], li")
+      .filter((node) => exactText(node).includes(String(materialId)))
+      .map((node) => node.closest("tr, [role=row], [class*='table-row'], [class*='TableRow'], [class*='row'], [class*='item'], li") || node)))
+      .filter((node) => exactText(node).includes(String(materialId)))
+      .sort((a, b) => exactText(a).length - exactText(b).length);
+    const pickMaterialControl = (row) => visible("input[type='checkbox'], [role='checkbox'], .ovui-checkbox, [class*='checkbox'], label", row)
+      .find((node) => !node.disabled && node.getAttribute("aria-disabled") !== "true") || row;
+    const dialogSelectors = "[role=dialog], .ovui-modal, .ovui-dialog, .ovui-drawer, [class*='modal'], [class*='dialog'], [class*='drawer']";
+    const activeDialogFor = (needle = "") => visible(dialogSelectors)
+      .filter((node) => !needle || exactText(node).includes(needle))
+      .sort((a, b) => {
+        const aRect = a.getBoundingClientRect();
+        const bRect = b.getBoundingClientRect();
+        return (bRect.width * bRect.height) - (aRect.width * aRect.height);
+      })[0] || null;
     const inputContext = (input) => clean(input.closest("label, .ovui-form-item, .form-item, [class*='form'], [class*='item'], div")?.innerText || "");
     const setInput = (input, value) => {
       input.focus();
@@ -573,16 +597,32 @@ function buildCreateTaskExpression(action, dryRun) {
         if (!live.ok) return { ok: false, dryRun: action.dryRun, steps };
         await wait(400);
       } else if (action.payload.materialIds?.length) {
+        const openPicker = await clickByText("button, [role=button], a", ["添加视频", "添加素材"], "open_material_picker");
+        steps.push(openPicker);
+        if (!openPicker.ok) return { ok: false, dryRun: action.dryRun, steps };
+        await wait(700);
         for (const materialId of action.payload.materialIds) {
-          const materialRows = visible("tr, [class*='row'], [class*='item'], li").filter((node) => textOf(node).includes(String(materialId)));
-          const row = materialRows[0];
+          const row = candidateRowsForMaterial(materialId)[0];
           if (!row) return { ok: false, dryRun: action.dryRun, step: "find_material", error: "material_id_not_found", materialId, steps, url: location.href, title: document.title };
           row.scrollIntoView({ block: "center", inline: "center" });
-          const checkbox = visible("input[type='checkbox'], [role='checkbox'], .ovui-checkbox, label", row)[0] || row;
+          const checkbox = pickMaterialControl(row);
           steps.push({ ok: true, step: "find_material", materialId, rowText: textOf(row).slice(0, 160) });
           checkbox.click();
           await wait(400);
         }
+        const picker = activeDialogFor(String(action.payload.materialIds[0] || ""));
+        const confirmPicker = await clickExactByText(["确定", "确认", "添加", "完成"], "confirm_material_picker", picker || document);
+        steps.push(confirmPicker);
+        if (!confirmPicker.ok) return { ok: false, dryRun: action.dryRun, steps };
+        await wait(700);
+        const createDialog = activeDialogFor("已添加") || activeDialogFor("调控预算") || activeDialogFor("追投素材");
+        const createText = exactText(createDialog || document.body);
+        const addedMatch = createText.match(/已添加\\s*[：:]\\s*(\\d+)\\s*\\/\\s*20/);
+        const addedCount = Number(addedMatch?.[1] || 0);
+        if (!Number.isFinite(addedCount) || addedCount < action.payload.materialIds.length) {
+          return { ok: false, dryRun: action.dryRun, step: "verify_materials_added", error: "materials_not_added_to_create_form", addedCount, expectedCount: action.payload.materialIds.length, steps, url: location.href, title: document.title };
+        }
+        steps.push({ ok: true, step: "verify_materials_added", addedCount });
       }
     } else {
       window.scrollTo({ top: document.body.scrollHeight * 0.45, behavior: "instant" });
@@ -612,7 +652,7 @@ function buildCreateTaskExpression(action, dryRun) {
     for (const item of [
       fillInput(["预算", "金额"], action.payload.budget, "fill_budget"),
       fillInput(["时长", "小时", "持续"], action.payload.durationHours, "fill_duration"),
-      fillInput(["ROI", "roi", "目标", "出价"], action.payload.targetRoi, "fill_roi"),
+      fillInput(["ROI", "roi", "目标"], action.payload.targetRoi, "fill_roi"),
       fillInput(["支付ROI", "支付 ROI"], action.payload.payRoi, "fill_pay_roi"),
       fillInput(["直播出价", "自定义出价", "出价"], action.payload.bidPrice, "fill_bid_price"),
     ]) {
@@ -721,7 +761,7 @@ async function previewTask(params = {}, options = {}) {
       materialIds: normalizeMaterialIds(params.materialIds, params.materialId),
       budget: Number(params.budget),
       durationHours: Number(params.durationHours),
-      targetRoi: oneclick ? undefined : Number(params.targetRoi) || undefined,
+      targetRoi: (oneclick || type === "materialBoost") ? undefined : Number(params.targetRoi) || undefined,
       payRoi: type === "materialCostControlPayRoi" ? Number(params.payRoi) || Number(params.targetRoi) : undefined,
       bidPrice: type === "materialCostControlBid" ? Number(params.bidPrice) : undefined,
       boostType: type.startsWith("materialCostControl") ? "materialCostControl" : liveScreenBoost ? "liveScreenBoost" : "materialBoost",
@@ -735,7 +775,8 @@ async function previewTask(params = {}, options = {}) {
   const result = await executeCreateAction(action, { ...options, dryRun: true });
   return {
     ok: result.ok === true,
-    error: result.error,
+    error: result.error || result.result?.error || result.result?.steps?.at(-1)?.error || "task_preview_failed",
+    detail: result,
     screenshotPath: result.afterScreenshot || result.beforeScreenshot || "",
     liveSourceScreenshot,
     beforeFailureScreenshot: result.attempts?.at(-1)?.failureScreenshot || result.beforeScreenshot || "",
@@ -938,4 +979,4 @@ async function executeAction(action, options = {}) {
   return { ok: false, error: "action_target_not_found_or_not_clickable", attempts };
 }
 
-module.exports = { executeAction, previewTask, isVerifiedPauseResult, buildFollowupExpression };
+module.exports = { executeAction, previewTask, isVerifiedPauseResult, buildFollowupExpression, buildCreateTaskExpression };
