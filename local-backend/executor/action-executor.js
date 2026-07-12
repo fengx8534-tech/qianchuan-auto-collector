@@ -419,20 +419,23 @@ function buildPauseConfirmationExpression(action) {
         .filter(isVisible)
         .map((dialog) => ({ dialog, text: clean(dialog.innerText || dialog.textContent || "") }))
         .filter(({ text }) => /确认|确定/.test(text) && expectedWords.some((word) => text.includes(word)));
-      const candidate = dialogs[dialogs.length - 1];
-      if (candidate) {
+      let visibleButtons = [];
+      for (const candidate of dialogs.slice().reverse()) {
         lastDialogText = candidate.text.slice(0, 300);
-        const confirm = Array.from(candidate.dialog.querySelectorAll("button, [role=button], a"))
-          .filter(isVisible)
-          .find((button) => {
-            const text = clean(button.innerText || button.textContent || button.getAttribute("aria-label") || "");
-            return /^(确定|确认|提交)$/.test(text) && !button.disabled && button.getAttribute("aria-disabled") !== "true";
-          });
-        if (!confirm) return { ok: false, step: "pause_confirmation", error: "pause_confirm_button_not_found", dialogText: lastDialogText, url: location.href, title: document.title };
+        const rawCandidates = Array.from(candidate.dialog.querySelectorAll("button, [role=button], a, input[type=button], input[type=submit], [class*='button'], [class*='btn'], div, span"))
+          .filter(isVisible);
+        const buttonCandidates = Array.from(new Set(rawCandidates.map((node) => node.closest("button, [role=button], a, input[type=button], input[type=submit], [tabindex], [class*='button'], [class*='btn']") || node)));
+        visibleButtons = buttonCandidates.map((button) => clean(button.innerText || button.textContent || button.getAttribute("aria-label") || button.value || "")).filter(Boolean).slice(0, 30);
+        const confirm = buttonCandidates.find((button) => {
+          const text = clean(button.innerText || button.textContent || button.getAttribute("aria-label") || button.value || "");
+          return /^(确定|确认|提交)$/.test(text) && !button.disabled && button.getAttribute("aria-disabled") !== "true";
+        });
+        if (!confirm) continue;
         const confirmText = clean(confirm.innerText || confirm.textContent || confirm.getAttribute("aria-label") || "");
         confirm.click();
         return { ok: true, step: "pause_confirm_clicked", confirmText, dialogText: lastDialogText, url: location.href, title: document.title };
       }
+      if (dialogs.length) return { ok: false, step: "pause_confirmation", error: "pause_confirm_button_not_found", dialogText: lastDialogText, visibleButtons, url: location.href, title: document.title };
       await wait(500);
     }
     return { ok: false, step: "pause_confirmation", error: "pause_confirm_dialog_not_found", dialogText: lastDialogText, url: location.href, title: document.title };
