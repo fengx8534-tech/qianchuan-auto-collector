@@ -218,7 +218,7 @@ function buildExtractTasksExpression() {
         const marker = String(el.className || "") + " " + clean(el.innerText || el.textContent || el.getAttribute("aria-label") || "");
         return isVisible(el) && (el.getAttribute("aria-busy") === "true" || /加载|loading|spin/i.test(marker));
       });
-    const emptyState = /共\\s*0\\s*条|暂无数据|暂无任务|未找到任务|哎呀/.test(bodyText);
+    const emptyState = /共\\s*0\\s*条|暂无数据|暂无任务|未找到任务|哎呀|没有.*任务|还没有|空空|no\\s*data|no\\s*task|empty/i.test(bodyText);
     const tableReady = taskCenterUrl && document.readyState === "complete" && taskHeaders && tableContainer;
     return {
       // A row from the old SPA view is not enough: require the task-center URL,
@@ -537,10 +537,13 @@ async function waitForTaskRows(client, expression, timeoutMs = 8000) {
       last = confirmed || last;
     }
     if (zeroRowStreak >= 2) {
+      // The table is ready but remains empty, so this is a normal empty state
+      // rather than a failed task collection.
       return {
         ...last,
-        ok: false,
-        error: "task_rows_empty_twice",
+        ok: true,
+        emptyState: true,
+        error: "",
         attempts,
         zeroRowStreak,
       };
@@ -786,7 +789,7 @@ async function collectTaskCenterPages(client, extractExpression, options = {}) {
   const warnings = [];
   let loadedEmpty = false;
   const extractPage = async (sourceTab, phase) => {
-    let page = await waitForTaskRows(client, extractExpression, 8000);
+    const page = await waitForTaskRows(client, extractExpression, 8000);
     logTaskPageProbe(options, {
       sourceTab,
       phase,
@@ -801,31 +804,10 @@ async function collectTaskCenterPages(client, extractExpression, options = {}) {
     });
     if (page?.error !== "task_rows_empty_twice") return page;
 
-    logWarning(options, { sourceTab, error: "task_rows_empty_twice_reloading" });
-    await reloadTaskCenter(client);
-    await evaluate(client, buildClickControlTabExpression()).catch(() => null);
-    await randomExtractDelay();
-    if (sourceTab === "materialBoost" || sourceTab === "oneClickLift") {
-      const tabKind = sourceTab === "oneClickLift" ? "oneclick" : "material";
-      await evaluate(client, buildClickTabExpression(tabKind)).catch(() => null);
-      await randomExtractDelay();
-    }
-    page = await waitForTaskRows(client, extractExpression, 8000);
-    logTaskPageProbe(options, {
-      sourceTab,
-      phase,
-      attempt: 2,
-      reloaded: true,
-      ok: Boolean(page?.ok),
-      error: page?.error || "",
-      url: page?.url || "",
-      rowCount: Number(page?.rowCount || 0),
-      dataRowCount: Number(page?.dataRowCount || 0),
-      taskRowCount: Number(page?.taskRowCount || 0),
-      firstTaskName: page?.firstTaskName || page?.tasks?.[0]?.taskName || "",
-    });
-    if (page?.error === "task_rows_empty_twice") warnings.push(`${sourceTab}_rows_empty_after_reload`);
-    return page;
+    // waitForTaskRows now returns ok:true/emptyState:true for consecutive empty
+    // rows. Reaching this guard means an older or unexpected caller result.
+    logWarning(options, { sourceTab, error: "task_rows_empty_twice_unexpected_reload" });
+    return { ...page, ok: true, emptyState: true, error: "" };
   };
 
   const pushPage = (page, sourceTab) => {
