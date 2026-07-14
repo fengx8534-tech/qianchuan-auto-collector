@@ -48,6 +48,29 @@ function loadInvestmentRules() {
 }
 
 const INVESTMENT_RULES_CONTEXT = loadInvestmentRules();
+const AUTONOMOUS_INVESTMENT_POLICY_PROMPT = `
+=== 自主投放策略 ===
+
+【放量触发条件】
+- 单小时 ROI > 5。
+- 当前 materialBoost 类型调控中任务少于 2 条。
+- 同时满足时，可生成 create_boost_task：materialStrategy=potentialMaterial（高点击、低消耗、非主跑素材），预算 150~200 元，时长 1 小时。
+
+【低效暂停条件】（必须同时满足全部条件；任一指标缺失则只观察）
+- 任务消耗 > 80 元，且成交订单/成交金额 = 0。
+- controlClick 在所有任务的点击次数中处于前 50%。
+- controlClick > 0、controlImpression > 0，且点击率 controlClick/controlImpression 低于全部有效任务平均点击率的 60%。
+- 任务存续超过 30 分钟。
+- 动作为 pause_task；params 必须携带 taskId、taskName、spend、controlClick、controlImpression，reason 必须写明消耗、零成交、展示、点击及点击率低于均值 60%。
+
+【追投占比超限时】
+- 仅当用户明确传入 manualBoostOverride=true，才允许越过追投占比拦截；否则保持原有占比护栏。
+
+【执行方式】
+- 以上条件满足才生成动作。系统仅在 actionMode=armed 时把它标记为 ready_to_execute；其他模式仍待人工审核。
+- 新建追投必须先完成 dryRun 截图验证；真实提交、暂停或结束仍须用户另行明确确认。
+
+=== 策略结束 ===`;
 
 function loadProjectConfig() {
   try {
@@ -608,14 +631,38 @@ function isActiveTask(task = {}) {
 }
 
 function normalizeTask(task = {}) {
-  if (task.taskId) return task;
+  const controlClick = num(task.controlClick ?? task.basic?.controlClick ?? task.oneclick?.controlClick ?? task.material?.controlClick);
+  const controlImpression = num(task.controlImpression ?? task.basic?.controlImpression ?? task.oneclick?.controlImpression ?? task.material?.controlImpression);
+  const metricFields = {
+    controlClick: Number.isFinite(controlClick) ? controlClick : null,
+    controlImpression: Number.isFinite(controlImpression) ? controlImpression : null,
+  };
+  if (task.taskId) return { ...task, ...metricFields };
   // 从 name 字段里提取 taskId，格式："任务名\nID: 1869xxx" 或 "任务名 ID: 1869xxx"
   const nameText = String(task.name || "");
   const match = nameText.match(/ID[：:\s]*(\d{12,})/);
   const taskId = match?.[1] || "";
   // taskName 取 ID 前面的部分（去掉换行和多余空格）
   const taskName = nameText.split(/\n|ID[：:\s]*\d{12,}/)[0].trim();
-  return { ...task, taskId, taskName: taskName || task.taskName || task.name };
+  return { ...task, ...metricFields, taskId, taskName: taskName || task.taskName || task.name };
+}
+
+function buildAiDecisionUserPayload(state = {}) {
+  const userPayload = buildUserPayload(state);
+  const currentTasks = Array.isArray(state.metrics?.tasks) ? state.metrics.tasks.map(normalizeTask) : [];
+  const byTaskId = new Map(currentTasks.map((task) => [String(task.taskId || task.id || ""), task]));
+  const withControlMetrics = (task, index) => {
+    const source = byTaskId.get(String(task.taskId || task.id || "")) || currentTasks[index] || {};
+    return {
+      ...task,
+      controlClick: task.controlClick ?? source.controlClick ?? null,
+      controlImpression: task.controlImpression ?? source.controlImpression ?? null,
+    };
+  };
+  userPayload.tasks = (userPayload.tasks || []).map(withControlMetrics);
+  if (!userPayload.metrics || typeof userPayload.metrics !== "object") userPayload.metrics = {};
+  userPayload.metrics.tasks = (userPayload.metrics.tasks || []).map(withControlMetrics);
+  return userPayload;
 }
 
 function isRegulationTaskType(taskType = "") {
@@ -2744,10 +2791,90 @@ function findAiActionTask(state = {}, action = {}) {
     || (taskName && String(task.name || task.taskName || "").includes(taskName))) || null;
 }
 
+function taskAgeMinutes(task = {}, now = Date.now()) {
+  const explicit = [task.createdAt, task.startedAt, task.startAt, task.createdTime]
+    .map((value) => Number(value))
+    .find((value) => Number.isFinite(value) && value > 0);
+  if (explicit) return Math.max(0, (now - explicit) / 60000);
+  const text = String(task.name || task.taskName || "");
+  const match = text.match(/\b(20\d{2})(\d{2})(\d{2})[_\s-].*?(\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second = "0"] = match;
+  const createdAt = Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour) - 8, Number(minute), Number(second));
+  return Number.isFinite(createdAt) && createdAt <= now ? (now - createdAt) / 60000 : null;
+}
+
+function assessAutonomousLowEfficiencyPause(state = {}, task = {}, now = Date.now()) {
+  const spend = num(task.spend);
+  const click = num(task.controlClick);
+  const impression = num(task.controlImpression);
+  const ageMinutes = taskAgeMinutes(task, now);
+  if (!isBoostTask(task) || !Number.isFinite(spend) || spend <= 80) return { ok: false, reason: "任务消耗未超过80元" };
+  if (!taskHasConfirmedZeroDeals(task)) return { ok: false, reason: "任务不是确认零成交" };
+  if (!Number.isFinite(click) || click <= 0 || !Number.isFinite(impression) || impression <= 0) return { ok: false, reason: "缺少有效展示或点击数据" };
+  if (!Number.isFinite(ageMinutes) || ageMinutes <= 30) return { ok: false, reason: "任务存续未超过30分钟或创建时间不可识别" };
+
+  const tasks = (state.metrics?.tasks || []).map(normalizeTask);
+  const clicks = tasks.map((item) => num(item.controlClick)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => b - a);
+  const ctrs = tasks.map((item) => {
+    const itemClick = num(item.controlClick);
+    const itemImpression = num(item.controlImpression);
+    return Number.isFinite(itemClick) && itemClick > 0 && Number.isFinite(itemImpression) && itemImpression > 0
+      ? itemClick / itemImpression
+      : null;
+  }).filter(Number.isFinite);
+  if (clicks.length < 2 || ctrs.length < 2) return { ok: false, reason: "有效任务点击或展示样本不足" };
+  const topHalfThreshold = clicks[Math.ceil(clicks.length / 2) - 1];
+  const meanCtr = ctrs.reduce((sum, value) => sum + value, 0) / ctrs.length;
+  const ctr = click / impression;
+  if (click < topHalfThreshold) return { ok: false, reason: "点击次数未处于任务前50%" };
+  if (!(ctr < meanCtr * 0.6)) return { ok: false, reason: "点击率未低于均值60%" };
+  const percent = (value) => `${Math.round(value * 10000) / 100}%`;
+  return {
+    ok: true,
+    spend,
+    controlClick: click,
+    controlImpression: impression,
+    reason: `消耗${spend}元·零成交·展示${impression}次·点击${click}次·点击率${percent(ctr)}低于均值${percent(meanCtr)}的60%，AI已判定低效`,
+  };
+}
+
+function activeMaterialBoostCount(state = {}) {
+  return (state.metrics?.tasks || []).filter((task) => task.taskType === "materialBoost" && isActiveTask(task)).length;
+}
+
+function enrichAiActionParams(state = {}, action = {}, now = Date.now()) {
+  const params = { ...(action.params || {}) };
+  const task = findAiActionTask(state, { ...action, params });
+  if (task) {
+    params.taskId = params.taskId || task.taskId || task.id;
+    params.taskName = params.taskName || task.taskName || task.name;
+    params.taskType = params.taskType || task.taskType || task.type;
+    params.spend = Number.isFinite(num(params.spend)) ? num(params.spend) : num(task.spend);
+    params.controlClick = Number.isFinite(num(params.controlClick)) ? num(params.controlClick) : num(task.controlClick);
+    params.controlImpression = Number.isFinite(num(params.controlImpression)) ? num(params.controlImpression) : num(task.controlImpression);
+  }
+  if (action.type === "pause_task") {
+    const assessment = assessAutonomousLowEfficiencyPause(state, task || {}, now);
+    if (assessment.ok && /低效|零成交|点击率/.test(String(action.reason || params.reason || ""))) {
+      params.autonomousLowEfficiencyPause = true;
+      params.reason = assessment.reason;
+      params.spend = assessment.spend;
+      params.controlClick = assessment.controlClick;
+      params.controlImpression = assessment.controlImpression;
+    }
+  }
+  return params;
+}
+
 function boostPauseGuardReason(state = {}, action = {}) {
   if (!["pause_task", "end_task"].includes(String(action.type || ""))) return "";
   const task = findAiActionTask(state, action);
   if (!task || !isBoostTask(task)) return "";
+  if (action.params?.autonomousLowEfficiencyPause === true) {
+    const assessment = assessAutonomousLowEfficiencyPause(state, task);
+    return assessment.ok ? "" : `自主低效暂停条件不成立：${assessment.reason}`;
+  }
   const spend = num(task.spend);
   const budget = num(task.budget);
   if (!Number.isFinite(spend) || !Number.isFinite(budget) || budget <= 0) return "追投任务缺少有效消耗或预算，不能建议关闭，应继续观察。";
@@ -2924,6 +3051,69 @@ function writeWarning(type, payload) {
   appendJsonl(LOG_FILE, { id: `${Date.now()}-${type}`, receivedAt: Date.now(), type, ...payload });
 }
 
+function enrichAiDecisionActions(state = {}, result = {}, now = Date.now()) {
+  if (result?.decision !== "act" || !Array.isArray(result.actions)) return result;
+  return {
+    ...result,
+    actions: result.actions.map((action) => ({
+      ...action,
+      params: enrichAiActionParams(state, action, now),
+    })),
+  };
+}
+
+function autonomousBoostAllowed(state = {}) {
+  const currentHourRoi = num(state.metrics?.currentHourRoi ?? state.hourlyBreakdown?.current?.roi);
+  return Number.isFinite(currentHourRoi) && currentHourRoi > 5 && activeMaterialBoostCount(state) < 2;
+}
+
+async function createAiActions(state = {}, result = {}, now = Date.now()) {
+  const created = [];
+  if (result?.decision !== "act" || !Array.isArray(result.actions)) return created;
+  for (const candidate of result.actions) {
+    const params = { ...(candidate.params || {}) };
+    if (candidate.type === "create_boost_task" && !params.useLiveRoomImage) {
+      const queuedMaterialBoosts = (state.actions || []).filter((action) => action.type === "create_boost_task"
+        && action.payload?.useLiveRoomImage !== true
+        && ["pending_review", "ready_to_execute", "approved", "executing"].includes(action.status)).length;
+      if (!autonomousBoostAllowed(state) || activeMaterialBoostCount(state) + queuedMaterialBoosts >= 2) {
+        writeWarning("ai_autonomous_boost_skipped", { reason: "hour_roi_or_active_material_boost_guard" });
+        continue;
+      }
+      params.materialStrategy = "potentialMaterial";
+      params.budget = Number.isFinite(num(params.budget)) && num(params.budget) >= 150 && num(params.budget) <= 200
+        ? num(params.budget)
+        : 150 + Math.floor(Math.random() * 51);
+      params.durationHours = 1;
+      const screened = await screenMaterialRecommendations({
+        type: params.materialStrategy,
+        manualBoostOverride: false,
+      });
+      if (!screened.ok || screened.blocked || !(screened.recommendedMaterialIds || []).length) {
+        writeWarning("ai_autonomous_boost_skipped", {
+          reason: screened.error || (screened.blocked ? "boost_ratio_guard" : "potential_material_not_found"),
+        });
+        continue;
+      }
+      params.materialIds = screened.recommendedMaterialIds;
+      params.materialId = params.materialIds[0];
+      if (activeMaterialBoostCount(state) >= 2) continue;
+    }
+    const createdAction = pushAction(
+      state,
+      candidate.type,
+      candidate.reason,
+      params,
+      `AI建议(置信度${candidate.confidence ?? "--"})：${params.reason || candidate.reason}`,
+      now,
+      "ai",
+      { allowManualBoostOverride: false },
+    );
+    if (createdAction) created.push(createdAction);
+  }
+  return created;
+}
+
 async function runAiDecision(state, receivedAt) {
   recoverOrderMetricsFromLatestPages(state, receivedAt);
   recoverConsistentSpendMetrics(state, receivedAt);
@@ -2931,7 +3121,7 @@ async function runAiDecision(state, receivedAt) {
   sanitizeStaleMetricState(state, receivedAt);
   state.aiInProgress = true;
   writeJson(STATE_FILE, state);
-  const userPayload = buildUserPayload(state);
+  const userPayload = buildAiDecisionUserPayload(state);
   const quadrant = detectQuadrant(state);
   const shiftProtection = isShiftProtection(state.config);
   const firstHourProtection = isFirstHourProtection(state.config);
@@ -2940,10 +3130,11 @@ async function runAiDecision(state, receivedAt) {
   userPayload.shiftProtection = shiftProtection;
   userPayload.firstHourProtection = firstHourProtection;
   userPayload.closingProtection = closingProtection;
-  const enrichedSystemPrompt = `${buildSystemPrompt()}\n\n--- 以下是完整投放 SOP 规则 ---\n\n${INVESTMENT_RULES_CONTEXT}`;
+  const enrichedSystemPrompt = `${buildSystemPrompt()}\n\n--- 以下是完整投放 SOP 规则 ---\n\n${INVESTMENT_RULES_CONTEXT}\n\n${AUTONOMOUS_INVESTMENT_POLICY_PROMPT}`;
   const payload = { config: state.config, systemPrompt: enrichedSystemPrompt, userPayload };
   let result = await deepseek.decide(payload);
   result = appendRoiLanguageCorrection(result, state);
+  result = enrichAiDecisionActions(state, result, receivedAt);
   result = applyBoostPauseGuard(state, result);
   result = applyAutomaticActionGuards(state, result, receivedAt);
   cancelObsoleteAiBoostPauseActions(state, receivedAt);
@@ -2951,11 +3142,7 @@ async function runAiDecision(state, receivedAt) {
   state.aiInProgress = false;
   state.lastAiCallAt = receivedAt;
   appendJsonl(AI_LOG_FILE, { ts: receivedAt, payload: userPayload, result });
-  if (result.decision === "act" && Array.isArray(result.actions)) {
-    result.actions.forEach((action) => {
-      pushAction(state, action.type, action.reason, action.params || {}, `AI建议(置信度${action.confidence ?? "--"})：${action.reason}`, receivedAt, "ai");
-    });
-  }
+  result.createdActions = await createAiActions(state, result, receivedAt);
   return result;
 }
 
@@ -2988,7 +3175,7 @@ async function triggerAiNow(options = {}) {
   cancelObsoleteAutomaticActions(state, receivedAt);
   state.aiInProgress = true;
   writeJson(STATE_FILE, state);
-  const userPayload = buildUserPayload(state);
+  const userPayload = buildAiDecisionUserPayload(state);
   const quadrant = detectQuadrant(state);
   const shiftProtection = isShiftProtection(state.config);
   const firstHourProtection = isFirstHourProtection(state.config);
@@ -2997,38 +3184,21 @@ async function triggerAiNow(options = {}) {
   userPayload.shiftProtection = shiftProtection;
   userPayload.firstHourProtection = firstHourProtection;
   userPayload.closingProtection = closingProtection;
-  const enrichedSystemPrompt = `${buildSystemPrompt()}\n\n--- 以下是完整投放 SOP 规则 ---\n\n${INVESTMENT_RULES_CONTEXT}`;
+  const enrichedSystemPrompt = `${buildSystemPrompt()}\n\n--- 以下是完整投放 SOP 规则 ---\n\n${INVESTMENT_RULES_CONTEXT}\n\n${AUTONOMOUS_INVESTMENT_POLICY_PROMPT}`;
   const payload = { config: state.config, systemPrompt: enrichedSystemPrompt, userPayload };
   let result = await deepseek.decide(payload);
   result = appendRoiLanguageCorrection(result, state);
+  result = enrichAiDecisionActions(state, result, receivedAt);
   result = applyBoostPauseGuard(state, result);
   result = applyAutomaticActionGuards(state, result, receivedAt);
   state.aiInProgress = false;
   state.lastAiCallAt = receivedAt;
   appendJsonl(AI_LOG_FILE, { ts: receivedAt, payload: userPayload, result });
-  const created = [];
-  if (result.decision === "act" && Array.isArray(result.actions)) {
-    result.actions.forEach((action) => {
-      const createdAction = pushAction(state, action.type, action.reason, action.params || {}, `AI建议(置信度${action.confidence ?? "--"})：${action.reason}`, receivedAt, "ai");
-      if (createdAction) created.push(createdAction);
-    });
-  }
+  const created = await createAiActions(state, result, receivedAt);
   applyAiFailureGuard(state, result, receivedAt);
   state.updatedAt = new Date().toISOString();
   writeJson(STATE_FILE, state);
   const autoExecutions = [];
-  if (state.config.actionMode === "armed") {
-    for (const action of created.filter((item) => item.status === "ready_to_execute")) {
-      const executionResult = await executeApprovedAction(action.id);
-      autoExecutions.push({
-        actionId: action.id,
-        type: action.type,
-        ok: executionResult.ok,
-        error: executionResult.error,
-        execution: executionResult.execution,
-      });
-    }
-  }
   const latest = readJson(STATE_FILE, state);
   const latestActions = created.map((action) => (latest.actions || []).find((item) => item.id === action.id) || action);
   notifyAiSuggestion(latest, result, latestActions, receivedAt);
@@ -3587,16 +3757,18 @@ async function updateState(snapshot) {
     state.trendData = state.trendData.slice(-60);
     state.lastInterceptAt = receivedAt;
     state.updatedAt = new Date().toISOString();
+    let aiResult = null;
     if (shouldRunAutoAi(state, receivedAt)) {
       state.actions = Array.isArray(state.actions) ? state.actions : [];
       const beforeIds = new Set(state.actions.map((action) => action.id));
-      const aiResult = await runAiDecision(state, receivedAt);
+      aiResult = await runAiDecision(state, receivedAt);
       const createdActions = state.actions.filter((action) => !beforeIds.has(action.id) && action.source === "ai");
       applyAiFailureGuard(state, aiResult, receivedAt);
-      notifyAiSuggestion(state, aiResult, createdActions, receivedAt);
+      aiResult.createdActions = createdActions;
     }
     preserveConcurrentHourlyState(state);
     writeJson(STATE_FILE, state);
+    if (aiResult) notifyAiSuggestion(readJson(STATE_FILE, state), aiResult, aiResult.createdActions || [], receivedAt);
     notifySystemAlerts(state);
     appendJsonl(LOG_FILE, { id: `${receivedAt}`, receivedAt, pageType: "apiIntercept", accountId: snapshot.accountId || null, trendPoints: points.length });
     return { state, ruleResult: { fiveMinSpend: state.fiveMinSpend ?? null, created: [] } };
@@ -3638,15 +3810,17 @@ async function updateState(snapshot) {
   state.updatedAt = new Date().toISOString();
   state.fiveMinSpend = ruleResult.fiveMinSpend;
   state.metrics.fiveMinSpend = ruleResult.fiveMinSpend;
+  let aiResult = null;
   if (shouldRunAutoAi(state, receivedAt)) {
     const beforeIds = new Set(state.actions.map((action) => action.id));
-    const aiResult = await runAiDecision(state, receivedAt);
+    aiResult = await runAiDecision(state, receivedAt);
     const createdActions = state.actions.filter((action) => !beforeIds.has(action.id) && action.source === "ai");
     applyAiFailureGuard(state, aiResult, receivedAt);
-    notifyAiSuggestion(state, aiResult, createdActions, receivedAt);
+    aiResult.createdActions = createdActions;
   }
   preserveConcurrentHourlyState(state);
   writeJson(STATE_FILE, state);
+  if (aiResult) notifyAiSuggestion(readJson(STATE_FILE, state), aiResult, aiResult.createdActions || [], receivedAt);
   notifySystemAlerts(state);
   appendJsonl(LOG_FILE, {
     id: `${receivedAt}`,
@@ -3745,6 +3919,9 @@ async function executeApprovedAction(id, options = {}) {
   if (!createAction && !action.payload?.taskId) {
     return failPreflight("missing_task_id");
   }
+  if (action.type === "create_boost_task" && action.payload?.useLiveRoomImage !== true && activeMaterialBoostCount(state) >= 2) {
+    return failPreflight("active_material_boost_limit");
+  }
   const taskExists = createAction || (state.metrics?.tasks || []).some((task) => String(task.taskId || task.id || "") === String(action.payload.taskId));
   if (!taskExists) {
     return failPreflight("task_not_in_current_scan");
@@ -3811,6 +3988,7 @@ async function executeApprovedAction(id, options = {}) {
     writeJson(STATE_FILE, latest);
     appendJsonl(LOG_FILE, { id: `${Date.now()}-action-execution`, receivedAt: Date.now(), type: "action_execution", actionId: id, result });
     notifyActionExecutionResult(latest, latestAction || action, { ok: result.ok, execution: result });
+    notifyLowEfficiencyPause(latest, latestAction || action, { ok: result.ok, execution: result });
     return { ok: result.ok, action: latestAction, execution: result };
   } catch (error) {
     const latest = readJson(STATE_FILE, state);
@@ -4408,6 +4586,23 @@ function notifyActionExecutionResult(state, action = {}, execution = {}) {
     `详情：${dingTalkReasonText(error || action.reason || "--")}`,
   ].join("\n");
   safeDingTalkText(state, "notifyActionResult", `action:${action.id || Date.now()}`, content);
+}
+
+function notifyLowEfficiencyPause(state, action = {}, execution = {}) {
+  const result = execution.execution || execution || {};
+  const params = action.payload || {};
+  if (action.type !== "pause_task" || params.autonomousLowEfficiencyPause !== true || result.dryRun === true || !(execution.ok === true || result.ok === true)) return false;
+  const time = new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" });
+  const text = [
+    "【追投低效预警·已暂停】",
+    `任务：${params.taskName || params.taskId || "--"}`,
+    `消耗：${params.spend ?? "?"}元 · 成交：0单`,
+    `展示次数：${params.controlImpression ?? "?"}`,
+    `点击次数：${params.controlClick ?? "?"}`,
+    `原因：${params.reason || action.reason || "--"}`,
+    `时间：${time}`,
+  ].join("\n");
+  return safeDingTalkText(state, "notifyActionResult", `low-efficiency-pause:${action.id || Date.now()}`, text);
 }
 
 function shanghaiHourKey(date = new Date()) {
@@ -5873,12 +6068,14 @@ async function runUnifiedAutoAiDecision() {
   applyAiFailureGuard(state, aiResult, receivedAt);
   state.updatedAt = new Date().toISOString();
   writeJson(STATE_FILE, state);
-  notifyAiSuggestion(state, aiResult, createdActions, receivedAt);
+  const autoExecutions = [];
+  notifyAiSuggestion(readJson(STATE_FILE, state), aiResult, createdActions, receivedAt);
   return {
     ok: !aiResult.error,
     skipped: false,
     createdActions: createdActions.length,
     pendingActions: createdActions.filter((action) => action.status === "pending_review" || action.status === "ready_to_execute").length,
+    autoExecutions,
     error: aiResult.error || "",
   };
 }

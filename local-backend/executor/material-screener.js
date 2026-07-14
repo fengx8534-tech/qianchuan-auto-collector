@@ -18,6 +18,32 @@ function sortBy(items, field) {
   return [...items].sort((left, right) => (numberOf(right[field]) || -Infinity) - (numberOf(left[field]) || -Infinity));
 }
 
+function potentialMaterials(items = []) {
+  const candidates = items.filter((item) => {
+    const ctr = numberOf(item.ctr);
+    const spend = numberOf(item.spend);
+    const clickCount = numberOf(item.clickCount ?? item["点击次数"]);
+    const boostStatus = String(item.boostStatus ?? item["追投状态"] ?? "");
+    const auditStatus = String(item.auditStatus ?? item["审核状态"] ?? "");
+    const materialRoi = numberOf(item.materialRoi ?? item["素材ROI"]);
+    return Number.isFinite(ctr) && ctr > 0
+      && Number.isFinite(clickCount) && clickCount > 0
+      && Number.isFinite(spend) && spend >= 0
+      && item.boostStatusKnown === true && boostStatus === "未追投"
+      && !/未通过|拒绝|失败/.test(auditStatus)
+      && Number.isFinite(materialRoi) && materialRoi >= 2;
+  });
+  const spends = candidates.map((item) => numberOf(item.spend)).sort((a, b) => a - b);
+  if (!spends.length) return [];
+  const medianSpend = spends[Math.floor((spends.length - 1) / 2)];
+  const highestSpend = spends.at(-1);
+  return candidates
+    .filter((item) => numberOf(item.spend) <= medianSpend && numberOf(item.spend) < highestSpend)
+    .sort((left, right) => numberOf(right.clickCount ?? right["点击次数"]) - numberOf(left.clickCount ?? left["点击次数"])
+      || numberOf(right.ctr) - numberOf(left.ctr)
+      || numberOf(left.spend) - numberOf(right.spend));
+}
+
 async function screenMaterials(type, manualIds = [], options = {}) {
   if (paused) {
     if (Date.now() - pausedAt >= PAUSE_RESET_MS) {
@@ -29,7 +55,7 @@ async function screenMaterials(type, manualIds = [], options = {}) {
       return { ok: false, error: "material_screener_paused_after_3_failures", paused: true, retryInSeconds, materials: [] };
     }
   }
-  const accepted = new Set(["topSpend", "comprehensiveRoi", "highCtr", "highCvr", "manual"]);
+  const accepted = new Set(["topSpend", "comprehensiveRoi", "highCtr", "highCvr", "potentialMaterial", "manual"]);
   if (!accepted.has(type)) return { ok: false, error: "invalid_screen_type", materials: [] };
 
   // Reuse the isolated CDP material route. It includes randomized 500-760ms
@@ -65,6 +91,9 @@ async function screenMaterials(type, manualIds = [], options = {}) {
     limit = maxCandidates;
   } else if (type === "highCvr") {
     materials = sortBy(all, "cvr");
+    limit = maxCandidates;
+  } else if (type === "potentialMaterial") {
+    materials = potentialMaterials(all);
     limit = maxCandidates;
   } else {
     materials = sortBy(all, "spend");

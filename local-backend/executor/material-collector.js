@@ -211,6 +211,7 @@ function buildExtractMaterialsExpression() {
     const indexes = {
       materialId: indexOf([/素材ID/, /^ID$/]),
       spend: indexOf([/消耗/, /成本/]),
+      clickCount: indexOf([/^点击次数$/, /点击量/, /^点击$/]),
       ctr: indexOf([/点击率/, /CTR/i]),
       cvr: indexOf([/转化率/, /CVR/i]),
       roi: indexOf([/素材ROI/, /^ROI$/, /综合ROI/]),
@@ -228,6 +229,7 @@ function buildExtractMaterialsExpression() {
       const id = indexes.materialId >= 0 ? (cells[indexes.materialId] || "").match(/\\d{8,}/)?.[0] : text.match(/(?:素材ID[：:]?\\s*)?(\\d{12,})/)?.[1];
       if (!id) continue;
       const spend = indexes.spend >= 0 ? money(num(cells[indexes.spend])) : money(num(text.match(/消耗[^\\d-]*(-?\\d[\\d,.]*)/)?.[1]));
+      const clickCount = indexes.clickCount >= 0 ? money(num(cells[indexes.clickCount])) : money(num(text.match(/点击(?:次数|量)?[^\\d-]*(\\d[\\d,.]*)/)?.[1]));
       const ctr = indexes.ctr >= 0 ? money(num(cells[indexes.ctr])) : money(num(text.match(/点击率[^\\d-]*(-?\\d[\\d,.]*%?)/)?.[1]));
       const cvr = indexes.cvr >= 0 ? money(num(cells[indexes.cvr])) : money(num(text.match(/转化率[^\\d-]*(-?\\d[\\d,.]*%?)/)?.[1]));
       const materialRoi = indexes.roi >= 0 ? money(num(cells[indexes.roi])) : null;
@@ -246,6 +248,8 @@ function buildExtractMaterialsExpression() {
         "素材ID": id,
         spend,
         "消耗": spend,
+        clickCount,
+        "点击次数": clickCount,
         ctr,
         "CTR": ctr,
         cvr,
@@ -256,6 +260,7 @@ function buildExtractMaterialsExpression() {
         "追投ROI": boostRoi,
         boostStatus,
         "追投状态": boostStatus,
+        boostStatusKnown: indexes.boostStatus >= 0,
         createdAt,
         "创建日期": createdAt,
         auditStatus,

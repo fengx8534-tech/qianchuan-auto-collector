@@ -151,6 +151,8 @@ function buildExtractTasksExpression() {
         dealAmount: metricAt(["调控成交金额"]) ?? tail[1] ?? null,
         roi: metricAt(["调控支付ROI", "支付ROI目标", "综合ROI目标"]) ?? tail[2] ?? null,
         spend: metricAt(["调控消耗"]) ?? tail[0] ?? null,
+        controlClick: metricAt(["调控点击次数", "点击次数"]) ?? null,
+        controlImpression: metricAt(["调控展示次数", "展示次数"]) ?? null,
       };
     };
     const taskTypeOf = (text) => {
@@ -192,6 +194,8 @@ function buildExtractTasksExpression() {
         roi,
         spend,
         dealAmount,
+        controlClick: taskCenterMetrics.controlClick,
+        controlImpression: taskCenterMetrics.controlImpression,
         rawText: text.slice(0, 700),
       };
     };
@@ -416,6 +420,8 @@ function buildFindTaskExpression(taskId, step) {
         dealAmount: metricAt(["调控成交金额"]) ?? tail[1] ?? null,
         roi: metricAt(["调控支付ROI", "支付ROI目标", "综合ROI目标"]) ?? tail[2] ?? null,
         spend: metricAt(["调控消耗"]) ?? tail[0] ?? null,
+        controlClick: metricAt(["调控点击次数", "点击次数"]) ?? null,
+        controlImpression: metricAt(["调控展示次数", "展示次数"]) ?? null,
       };
     };
     const taskId = ${JSON.stringify(String(taskId || ""))};
@@ -446,6 +452,8 @@ function buildFindTaskExpression(taskId, step) {
         roi,
         spend,
         dealAmount,
+        controlClick: taskCenterMetrics.controlClick,
+        controlImpression: taskCenterMetrics.controlImpression,
         materialIds: ids,
         rawText: text.slice(0, 700),
       };
@@ -560,6 +568,8 @@ function normalizeBasic(task = {}) {
     roi: money(num(task.roi)),
     spend: money(num(task.spend)),
     dealAmount: money(num(task.dealAmount)),
+    controlClick: money(num(task.controlClick)),
+    controlImpression: money(num(task.controlImpression)),
   };
 }
 
@@ -578,6 +588,8 @@ function oneClickFromMatch(match = {}, fallback = {}) {
     roi: preferNonZeroMetric(match.roi, fallback.roi),
     spend: preferNonZeroMetric(match.spend, fallback.spend),
     dealAmount: preferNonZeroMetric(match.dealAmount, fallback.dealAmount),
+    controlClick: preferNonZeroMetric(match.controlClick, fallback.controlClick),
+    controlImpression: preferNonZeroMetric(match.controlImpression, fallback.controlImpression),
     status: match.status || fallback.status || "",
   };
 }
@@ -589,6 +601,8 @@ function materialFromMatch(match = {}, fallback = {}) {
     roi: preferNonZeroMetric(match.roi, fallback.roi),
     budget: money(num(match.budget ?? fallback.budget)),
     dealAmount: preferNonZeroMetric(match.dealAmount, fallback.dealAmount),
+    controlClick: preferNonZeroMetric(match.controlClick, fallback.controlClick),
+    controlImpression: preferNonZeroMetric(match.controlImpression, fallback.controlImpression),
     status: match.status || fallback.status || "",
   };
 }
@@ -625,6 +639,8 @@ function mergeCollectedIntoMetricsTasks(state, collected = [], options = {}) {
       roi: money(num(oneclick.roi ?? material.roi ?? basic.roi)),
       spend: money(num(oneclick.spend ?? material.spend ?? basic.spend)),
       dealAmount: money(num(oneclick.dealAmount ?? material.dealAmount ?? basic.dealAmount)),
+      controlClick: money(num(oneclick.controlClick ?? material.controlClick ?? basic.controlClick)),
+      controlImpression: money(num(oneclick.controlImpression ?? material.controlImpression ?? basic.controlImpression)),
       oneclick,
       material,
       source: "task_collector",
