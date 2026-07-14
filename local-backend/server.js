@@ -2485,6 +2485,31 @@ function groupTasksByType(tasks = []) {
   return groups;
 }
 
+// The dashboard must derive both its rows and its source summary from the same
+// normalized task list.  Keeping collector counters from an earlier scan here
+// makes an empty task list look like it still has active regulation plans.
+function syncTaskSourceSummary(state = {}) {
+  const actualTasks = Array.isArray(state.metrics?.tasks) ? state.metrics.tasks : [];
+  const visibleTasks = actualTasks.filter((task) => {
+    if (!isRegulationTaskType(task.taskType || "")) return true;
+    return isActiveTask(task);
+  });
+  const visibleCount = visibleTasks.length;
+
+  if (!state.metrics || typeof state.metrics !== "object") state.metrics = {};
+  state.metrics.boostTasks = visibleCount;
+  state.taskGroups = groupTasksByType(actualTasks);
+
+  if (!state.taskSource || typeof state.taskSource !== "object") return;
+  state.taskSource.total = visibleCount;
+  state.taskSource.count = visibleCount;
+  state.taskSource.collectedCount = visibleCount;
+  state.taskSource.activeCount = visibleCount;
+  // Once the normalized list is empty, a previous scan's filter summary is
+  // equally stale and must not make the dashboard claim historical rows.
+  if (visibleCount === 0) state.taskSource.filteredCount = 0;
+}
+
 function reqFromOf(url) {
   try {
     return new URL(url).searchParams.get("reqFrom");
@@ -4075,6 +4100,7 @@ function readStateForDashboard() {
   state.actions = Array.isArray(state.actions) ? state.actions : [];
   const lifecycleChanged = reconcileLiveLifecycleForNow(state);
   const metricsBefore = JSON.stringify({ metrics: state.metrics || {}, assistMetrics: state.assistMetrics || {}, metricSources: state.metricSources || {} });
+  const taskSummaryBefore = JSON.stringify({ taskSource: state.taskSource || {}, taskGroups: state.taskGroups || {} });
   if (!hasMaterialIndex(state.materialIndex)) state.materialIndex = loadMaterialIndexFromSnapshots();
   if (state.latestByPage) {
     state.metrics = {
@@ -4118,12 +4144,10 @@ function readStateForDashboard() {
     delete state.metricSources.flowSpeed;
   }
   recoverFiveMinSpendFromBoardTrend(state);
-  if (state.metrics?.tasks) {
+  if (Array.isArray(state.metrics?.tasks)) {
     state.metrics.tasks = taskListForState(state.metrics.tasks, state);
-    state.metrics.boostTasks = state.metrics.tasks.length;
-    state.taskGroups = groupTasksByType(state.metrics.tasks);
-    if (state.taskSource?.status === "ok") state.taskSource.total = state.metrics.tasks.length;
   }
+  syncTaskSourceSummary(state);
   const sourceBefore = JSON.stringify(state.actions.map((action) => [action.id, action.source]));
   normalizeActionSources(state);
   const before = JSON.stringify(state.actions.map((action) => [action.id, action.status]));
@@ -4131,7 +4155,8 @@ function readStateForDashboard() {
   const after = JSON.stringify(state.actions.map((action) => [action.id, action.status]));
   const sourceAfter = JSON.stringify(state.actions.map((action) => [action.id, action.source]));
   const metricsAfter = JSON.stringify({ metrics: state.metrics || {}, assistMetrics: state.assistMetrics || {}, metricSources: state.metricSources || {} });
-  if (lifecycleChanged || before !== after || sourceBefore !== sourceAfter || metricsBefore !== metricsAfter) writeJson(STATE_FILE, state);
+  const taskSummaryAfter = JSON.stringify({ taskSource: state.taskSource || {}, taskGroups: state.taskGroups || {} });
+  if (lifecycleChanged || before !== after || sourceBefore !== sourceAfter || metricsBefore !== metricsAfter || taskSummaryBefore !== taskSummaryAfter) writeJson(STATE_FILE, state);
   return { ...state, config: publicConfig(state.config) };
 }
 

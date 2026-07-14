@@ -1329,13 +1329,17 @@ function taskGroupEmptyText(state = {}, key = "", rawGroupTasks = []) {
 }
 
 function renderTaskHealth(state) {
-  const rawTasks = (state.metrics?.tasks || []);
+  const rawTasks = Array.isArray(state.metrics?.tasks) ? state.metrics.tasks : [];
   const tasks = rawTasks.filter((task) => shouldDisplayTask(task, state));
   const target = Number(state.config?.targetRoi || 6.5);
   const taskSource = state.taskSource || {};
   const stale = !taskSource.receivedAt || Date.now() - taskSource.receivedAt > 10 * 60 * 1000;
-  const collectedCount = Number.isFinite(Number(taskSource.collectedCount ?? taskSource.count)) ? Number(taskSource.collectedCount ?? taskSource.count) : rawTasks.length;
-  const filteredCount = Number.isFinite(Number(taskSource.filteredCount)) ? Number(taskSource.filteredCount) : Math.max(0, collectedCount - rawTasks.length);
+  // Task rows are the source of truth.  taskSource is only collector metadata;
+  // it may still contain counters from an earlier scan while rows are empty.
+  const collectedCount = rawTasks.length;
+  const filteredCount = rawTasks.length && Number.isFinite(Number(taskSource.filteredCount))
+    ? Math.max(0, Number(taskSource.filteredCount))
+    : 0;
   const filterText = filteredCount > 0 ? ` · 历史过滤 ${filteredCount} 条` : "";
   const taskQualityPartial = taskSource.qualityStatus === "partial";
   $("taskSourceBadge").textContent = taskSource.status === "ok"
@@ -1347,7 +1351,15 @@ function renderTaskHealth(state) {
     : "来源：等待打开素材调控/一键起量页面后采集";
   if (!rawTasks.length) {
     configureToggle("taskHealthToggle", "taskHealth", 0, 0);
-    $("taskHealthList").innerHTML = `<div class="empty">暂无调控任务数据。请在 CDP Chrome 打开素材调控或一键起量页面后执行视觉补采。</div>`;
+    const lastError = String(state.taskCollectStatus?.lastError || "").trim();
+    const emptyText = lastError
+      ? `当前未采集到调控计划，最近采集失败：${escapeHtml(lastError)}`
+      : taskSource.status === "ok" || taskSource.status === "empty"
+        ? "当前未做调控动作"
+        : "暂无调控任务数据。请在 CDP Chrome 打开素材调控或一键起量页面后执行视觉补采。";
+    // Always replace the list when no rows exist so an old in-memory DOM cannot
+    // leave action buttons from a previous response on screen.
+    $("taskHealthList").innerHTML = `<div class="empty">${emptyText}</div>`;
     return;
   }
   const rawGroups = rawTasks.reduce((acc, task) => {
